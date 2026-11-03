@@ -1,0 +1,27 @@
+# 统一换行符：避免 Windows 下编辑的 shell 脚本跑到 Linux 上变成
+# "bad interpreter: /usr/bin/env bash^M" 这种诡异报错
+* text=auto eol=lf
+
+# 脚本必须是 LF，不能是 CRLF
+*.sh      text eol=lf
+scripts/* text eol=lf
+
+# 仅 Windows 使用的批处理保留 CRLF
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+
+# 二进制文件不参与换行转换
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.webp    binary
+*.ico     binary
+*.pdf     binary
+*.woff    binary
+*.woff2   binary
+*.ttf     binary
+*.zip     binary
+*.gz      binary
+*.db      binary
+*.sqlite* binary
