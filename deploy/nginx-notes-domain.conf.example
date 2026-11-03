@@ -1,0 +1,25 @@
+# nginx 反代模板 —— 域名版
+# 前提：域名已解析到本服务器；境内服务器必须已完成 ICP 备案，
+#       否则 80/443 会被云厂商拦截页劫持（未备案请用 IP:端口 版）。
+# 用法：
+#   sudo cp deploy/nginx-notes-domain.conf.example /etc/nginx/conf.d/notes.conf
+#   把 <你的域名> 换成你的域名；certbot 签发 HTTPS 证书（可选但推荐）
+#   nginx -t && systemctl reload nginx
+
+server {
+    listen 80;
+    server_name notes.example.com;   # ← 改成你的域名
+
+    client_max_body_size 50m;
+
+    location / {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 300s;
+    }
+}
+
+# HTTPS（推荐，装好 certbot 后执行：sudo certbot --nginx -d notes.example.com）
+# certbot 会自动改写本文件加 443 段和证书路径，无需手工配置。

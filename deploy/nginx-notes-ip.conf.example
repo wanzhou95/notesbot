@@ -1,0 +1,22 @@
+# nginx 反代模板 —— IP:端口 版（推荐，境内服务器免备案）
+# 用法：
+#   sudo cp deploy/nginx-notes-ip.conf.example /etc/nginx/conf.d/notes-ip.conf
+#   按需改端口；云厂商安全组放行对应 TCP 端口
+#   nginx -t && systemctl reload nginx
+#   访问 http://<你的服务器IP>:8080
+
+server {
+    listen 8080;
+    server_name _;
+    # 语音、图片上传可能较大，放开限制
+    client_max_body_size 50m;
+
+    location / {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # AI 生成回复可能超过 1 分钟，别用默认 60s
+        proxy_read_timeout 300s;
+    }
+}

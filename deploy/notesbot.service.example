@@ -1,0 +1,36 @@
+# systemd 服务模板
+# 用法：改好路径后拷贝到 /etc/systemd/system/notesbot.service
+#   sudo cp deploy/notesbot.service.example /etc/systemd/system/notesbot.service
+#   sudo vim /etc/systemd/system/notesbot.service   # 核对下面标注的路径
+#   sudo systemctl daemon-reload && sudo systemctl enable --now notesbot
+#
+# 前置：已创建系统账号 notesbot（nologin 即可）：
+#   sudo useradd -r -s /sbin/nologin -d /srv/app/notesbot notesbot
+#   sudo chown -R notesbot:notesbot /srv/app/notesbot /srv/notes
+#
+# ↓↓↓ 路径按你的实际部署位置修改 ↓↓↓
+
+[Unit]
+Description=NotesBot 知识库服务
+After=network.target
+
+[Service]
+Type=simple
+User=notesbot
+# <APP_DIR> = 代码所在目录（含 web.py 的目录）
+WorkingDirectory=/srv/app/notesbot/app
+Environment=PYTHONPATH=/srv/app/notesbot:/srv/app/notesbot/app
+Environment=NOTESBOT_ENV=/srv/app/notesbot/.env
+# <VENV> = 虚拟环境里 uvicorn 的实际路径
+ExecStart=/srv/app/notesbot/venv/bin/uvicorn web:app --host 127.0.0.1 --port 18080
+Restart=always
+RestartSec=5
+# 小内存机器保险丝：服务超过 500M 自动重启
+MemoryMax=500M
+# 安全加固：服务被入侵也难越权
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

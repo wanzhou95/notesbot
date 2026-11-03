@@ -377,6 +377,7 @@ GLM 系模型没关思考。检查 `GLM_DISABLE_THINKING=1`。
 | `web.py` | 路由与接口 | 加 API |
 | `static/` | 前端 | 改界面 |
 | `manage.py` | 命令工具 | 加运维命令 |
+| `deploy/` | systemd + nginx 部署模板 | 生产部署直接拷贝改路径 |
 
 ### 私有定制怎么加
 
