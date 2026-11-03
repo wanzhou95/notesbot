@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 密钥与配置（绝对不能提交）
+.env
+.env.*
+!.env.example
+set-secret.sh
+
+# 运行时数据
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# 导出产物
+exports/
+
+# 系统
+.DS_Store
+Thumbs.db
