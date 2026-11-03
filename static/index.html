@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>我的知识库</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--line:#e5e7eb;--tx:#1f2937;--mut:#6b7280;--acc:#4f46e5}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx)}
+.hd{position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;justify-content:space-between;align-items:center;z-index:5}
+.hd b{font-size:16px}
+.wrap{max-width:720px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.inp{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font-size:15px;font-family:inherit;resize:none}
+.btn{background:var(--acc);color:#fff;border:0;border-radius:10px;padding:11px 16px;font-size:15px;font-weight:600;cursor:pointer;width:100%}
+.btn.ghost{background:#eef2ff;color:var(--acc)}
+.row{display:flex;gap:8px}.row .btn{width:auto;flex:1}
+.mut{color:var(--mut);font-size:13px}
+.item{border-bottom:1px solid var(--line);padding:10px 0;cursor:pointer}.item:last-child{border:0}
+.item:active{background:#f9fafb}
+.item h3{margin:0 0 4px;font-size:15px}.item p{margin:0;color:var(--mut);font-size:13px;white-space:pre-wrap}
+.viewer{position:fixed;inset:0;background:rgba(17,24,39,.45);display:none;z-index:50;padding:16px;overflow-y:auto}
+.viewer.on{display:block}
+.vbox{background:var(--card);border-radius:12px;padding:16px;max-width:720px;margin:0 auto}
+.vhd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:10px;border-bottom:1px solid var(--line);padding-bottom:10px}
+.vhd b{font-size:15px;word-break:break-all}
+.vbody{white-space:pre-wrap;font-size:14px;line-height:1.75;font-family:inherit;margin:0}
+.x{background:#f3f4f6;border:0;border-radius:8px;padding:6px 12px;font-size:14px;cursor:pointer;color:var(--tx)}
+.msg{padding:10px 12px;border-radius:10px;margin-top:10px;font-size:14px;white-space:pre-wrap;background:#f0fdf4;border:1px solid #bbf7d0}
+.msg.err{background:#fef2f2;border-color:#fecaca}
+.proj{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--card)}
+.tabs{display:flex;gap:4px;margin-bottom:12px}
+.tabs button{flex:1;border:1px solid var(--line);background:var(--card);border-radius:8px;padding:8px;font-size:14px;cursor:pointer}
+.tabs button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.ver{font-size:11px;color:#9ca3af;margin-left:8px}
+.exp{color:var(--acc);font-size:13px;text-decoration:none;margin-right:10px}
+.upitem{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:8px;background:#fbfbfd}
+.upitem .nm{font-size:13px;word-break:break-all}
+.upitem .acts{margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
+.upitem .acts button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:4px 10px;font-size:13px;cursor:pointer;color:var(--acc)}
+.upitem .acts button:disabled{opacity:.5;cursor:default}
+.upitem .res{margin-top:6px;font-size:13px;color:var(--mut);white-space:pre-wrap;border-top:1px dashed var(--line);padding-top:6px}
+.thumb{max-width:72px;max-height:72px;border-radius:6px;float:right;margin-left:8px}
+</style>
+</head>
+<body>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v6</span></div>
+<div class="wrap">
+<div class="tabs">
+<button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
+<button id="tab-search" onclick="switchPane('search')">搜索</button>
+<button id="tab-projects" onclick="switchPane('projects')">项目</button>
+<button id="tab-ask" onclick="switchPane('ask')">问AI</button>
+</div>
+<div id="pane-write" class="pane">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span id="ctx" class="mut"></span>
+      <button id="leaveBtn" class="btn ghost" style="width:auto;display:none;padding:4px 10px;font-size:13px" onclick="leave()">离开项目</button>
+    </div>
+    <textarea id="txt" class="inp" rows="4" placeholder="写点什么，或输入命令：开始 X / 结束 / 列表"></textarea>
+    <div class="row" style="margin-top:8px"><button class="btn" onclick="send()">发送</button><button class="btn ghost" onclick="pickFile()">📎 上传</button></div>
+    <input type="file" id="file" multiple accept="image/*,.txt,.md,.docx,.csv,.json,.log,.yaml,.html" style="display:none">
+    <div id="uploads" style="margin-top:8px"></div>
+    <div id="out" class="msg" style="display:none"></div>
+  </div>
+  <div class="card"><div class="mut">最近笔记（点开看全文）</div><div id="recent"></div></div>
+</div>
+<div id="pane-search" class="pane" style="display:none">
+  <div class="card"><input id="q" class="inp" placeholder="搜索自己的笔记（语义+关键词）"><div class="row" style="margin-top:8px"><button class="btn" onclick="search()">搜索</button><button class="btn ghost" onclick="reindex(this)">重建索引</button></div><div id="sres"></div></div>
+</div>
+<div id="pane-projects" class="pane" style="display:none">
+  <div class="card"><div class="mut">项目列表</div><div id="projmsg" style="display:none"></div><div id="proj"></div></div>
+</div>
+<div id="pane-ask" class="pane" style="display:none">
+  <div class="card">
+    <div class="mut">直接问大模型，回答任何问题（不查你的笔记库）</div>
+    <div id="chat" style="max-height:420px;overflow-y:auto;margin:10px 0"></div>
+    <div class="row">
+      <input id="askq" class="inp" style="flex:1" placeholder="问任何问题，回车或点发送">
+      <button class="btn" style="width:auto" onclick="askAi()">发送</button>
+    </div>
+  </div>
+</div>
+</div>
+<div id="viewer" class="viewer" onclick="if(event.target===this)closeNote()">
+  <div class="vbox">
+    <div class="vhd"><div><b id="vname"></b><div class="mut" id="vmeta" style="margin-top:4px"></div></div><button class="x" onclick="closeNote()">关闭</button></div>
+    <pre id="vbody" class="vbody"></pre>
+  </div>
+</div>
+<script>
+window.api = function(url, opts){
+  opts = opts || {};
+  return fetch(url, opts).then(function(r){
+    if(r.status === 401){ location.href = '/'; throw new Error('unauthorized'); }
+    return r.json();
+  });
+};
+window.switchPane = function(t){
+  ['write','search','projects','ask'].forEach(function(x){
+    document.getElementById('tab-' + x).classList.toggle('on', x === t);
+    document.getElementById('pane-' + x).style.display = (x === t ? 'block' : 'none');
+  });
+  if(t === 'projects'){ loadProj(); }
+};
+window.send = function(){
+  var t = document.getElementById('txt').value.trim();
+  if(!t){ return; }
+  document.getElementById('txt').value = '';
+  var o = document.getElementById('out');
+  o.style.display = 'block';
+  o.className = 'msg';
+  o.textContent = '处理中...';
+  api('/api/msg', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:t})})
+    .then(function(d){
+      o.textContent = d.reply;
+      o.className = 'msg' + (d.error ? ' err' : '');
+      loadRecent(); loadProj(); loadCtx();
+    });
+};
+window.search = function(){
+  var q = document.getElementById('q').value.trim();
+  if(!q){ return; }
+  var el = document.getElementById('sres');
+  el.innerHTML = '<div class="mut">搜索中...</div>';
+  api('/api/search?q=' + encodeURIComponent(q))
+    .then(function(d){
+      el.innerHTML = (d.hits || []).map(function(h){
+        return '<div class="item" onclick="openNote(\'' + escAttr(h.path) + '\')"><h3>' + escapeHtml(shortPath(h.path)) + '</h3><p>' + escapeHtml(h.snippet) + '</p></div>';
+      }).join('') || '<div class="mut">无结果</div>';
+    });
+};
+window.shortPath = function(p){
+  var a = String(p || '').split('/');
+  return a.length > 1 ? a.slice(-2).join(' / ') : p;
+};
+window.escAttr = function(s){
+  return String(s == null ? '' : s).replace(/[\\'"<>&]/g, function(c){
+    return {'\\':'\\\\','"':'&quot;',"'":'&#39;','<':'&lt;','>':'&gt;','&':'&amp;'}[c];
+  });
+};
+window.openNote = function(path){
+  var v = document.getElementById('viewer');
+  document.getElementById('vname').textContent = '加载中...';
+  document.getElementById('vmeta').textContent = path;
+  document.getElementById('vbody').textContent = '';
+  v.classList.add('on');
+  api('/api/note?path=' + encodeURIComponent(path))
+    .then(function(d){
+      document.getElementById('vname').textContent = d.name || path;
+      document.getElementById('vmeta').textContent = (d.path || path) + (d.mtime ? ' · ' + d.mtime : '');
+      document.getElementById('vbody').textContent = d.content || '';
+    })
+    .catch(function(){
+      document.getElementById('vname').textContent = '读取失败';
+      document.getElementById('vbody').textContent = '请稍后重试';
+    });
+};
+window.closeNote = function(){ document.getElementById('viewer').classList.remove('on'); };
+window.pickFile = function(){ document.getElementById('file').click(); };
+window.uploads = {};
+window.renderUploads = function(){
+  var el = document.getElementById('uploads');
+  var keys = Object.keys(window.uploads);
+  if(!keys.length){ el.innerHTML = ''; return; }
+  el.innerHTML = keys.map(function(k){
+    var u = window.uploads[k];
+    var thumb = u.kind === 'image' && u.preview ? '<img class="thumb" src="' + u.preview + '">' : '';
+    var acts = '';
+    if(u.kind === 'image'){
+      acts = '<button onclick="procUp(\'' + k + '\',\'ocr\',this)">识别文字</button>';
+    } else {
+      acts = '<button onclick="procUp(\'' + k + '\',\'organize\',this)">整理成笔记</button>';
+    }
+    return '<div class="upitem">' + thumb + '<div class="nm">' + escapeHtml(u.name) + '</div>' +
+      '<div class="mut" style="font-size:12px">' + (u.kind === 'image' ? '图片 · 已存图库' : '文件') + '</div>' +
+      '<div class="acts">' + acts + '</div>' +
+      (u.res ? '<div class="res">' + escapeHtml(u.res) + '</div>' : '') +
+      '</div>';
+  }).join('');
+};
+window.onfile = function(){
+  var files = document.getElementById('file').files;
+  for(var i = 0; i < files.length; i++){ uploadOne(files[i]); }
+  document.getElementById('file').value = '';
+};
+window.uploadOne = function(f){
+  if(f.size > 8*1024*1024){ alert('「' + f.name + '」超过 8MB，已跳过'); return; }
+  var key = Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+  window.uploads[key] = {name: f.name, kind: /^image\//.test(f.type) ? 'image' : 'file', res: '上传中...'};
+  renderUploads();
+  var rd = new FileReader();
+  rd.onload = function(){
+    api('/api/upload', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name: f.name, data: rd.result})})
+      .then(function(d){
+        var u = window.uploads[key];
+        u.path = d.path; u.kind = d.kind; u.preview = u.kind === 'image' ? rd.result : null;
+        u.res = '';
+        renderUploads();
+      })
+      .catch(function(){ window.uploads[key].res = '上传失败，请重试'; renderUploads(); });
+  };
+  rd.readAsDataURL(f);
+};
+window.procUp = function(key, action, btn){
+  var u = window.uploads[key];
+  if(!u || !u.path){ return; }
+  if(btn){ btn.disabled = true; }
+  u.res = (action === 'ocr' ? '识别中...' : '整理中...');
+  renderUploads();
+  api('/api/process', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({path: u.path, action: action})})
+    .then(function(d){
+      if(action === 'ocr'){
+        u.res = d.text ? ('识别结果：\n' + d.text + '\n\n✅ 已存为笔记「' + d.category + '」，可在搜索里查看') :
+               (d.msg || '未识别到文字');
+      } else {
+        u.res = '✅ 已整理归档到「' + d.category + '」';
+      }
+      renderUploads(); loadRecent();
+    })
+    .catch(function(){ u.res = '处理失败，请重试'; renderUploads(); });
+};
+window.reindex = function(btn){
+  var b = btn || document.querySelector('#pane-search .ghost');
+  if(!b){ return; }
+  b.disabled = true; b.textContent = '索引中...';
+  api('/api/reindex', {method:'POST'}).then(function(d){
+    b.disabled = false; b.textContent = '重建索引';
+    document.getElementById('sres').innerHTML = '<div class="item"><p>✅ 索引重建完成，共 ' + d.chunks + ' 个片段</p></div>';
+  }).catch(function(){
+    b.disabled = false; b.textContent = '重建索引';
+    document.getElementById('sres').innerHTML = '<div class="item"><p style="color:#dc2626">索引重建失败，请重试</p></div>';
+  });
+};
+window.loadRecent = function(){
+  api('/api/recent').then(function(d){
+    document.getElementById('recent').innerHTML = (d.files || []).map(function(f){
+      return '<div class="item" onclick="openNote(\'' + escAttr(f.rel) + '\')"><h3>' + escapeHtml(f.name) + '</h3><p class="muted">' + escapeHtml(f.mtime) + '</p><p>' + escapeHtml((f.snippet || '').slice(0, 70)) + '</p></div>';
+    }).join('') || '<div class="mut">暂无笔记</div>';
+  });
+};
+window.loadProj = function(){
+  api('/api/projects').then(function(d){
+    var el = document.getElementById('proj');
+    if(!d.list || !Object.keys(d.list).length){
+      el.innerHTML = '<div class="mut">还没有项目，输入「开始 项目名」创建</div>';
+      return;
+    }
+    el.innerHTML = Object.entries(d.list).map(function(e){
+      var slug = e[0], p = e[1];
+      var cur = slug === d.active ? ' ←当前' : '';
+      var exp = '';
+      if(p.version > 0){
+        exp = '<div style="margin-top:6px"><a class="exp" href="/api/export?slug=' + encodeURIComponent(slug) + '&fmt=docx">导出 Word</a> '
+            + '<a class="exp" href="/api/export?slug=' + encodeURIComponent(slug) + '&fmt=pdf">导出 PDF</a></div>';
+      }
+      return '<div class="proj"><div><b>' + escapeHtml(p.name) + '</b><div class="mut">' +
+        p.steps + ' 步 · v' + p.version + (p.status === 'done' ? ' · 已完成' : '') + cur +
+        '</div>' + exp + '</div><button class="btn ghost" style="width:auto" onclick="switchTo(\'' + slug + '\')">切到</button></div>';
+    }).join('');
+  });
+};
+window.switchTo = function(s){
+  var m = document.getElementById('projmsg');
+  m.style.display = 'block';
+  m.className = 'msg';
+  m.textContent = '切换中...';
+  api('/api/msg', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:'切到 ' + s})})
+    .then(function(d){
+      m.textContent = d.reply || '已切换';
+      m.className = 'msg' + (d.error ? ' err' : '');
+      loadProj(); loadCtx();
+    })
+    .catch(function(){ m.textContent = '切换失败，请重试'; m.className = 'msg err'; });
+};
+window.leave = function(){
+  api('/api/msg', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:'离开'})})
+    .then(function(d){
+      var o = document.getElementById('out');
+      o.style.display = 'block';
+      o.className = 'msg';
+      o.textContent = d.reply || '已离开';
+      loadCtx(); loadProj();
+    });
+};
+window.loadCtx = function(){
+  api('/api/ctx').then(function(d){
+    document.getElementById('ctx').textContent = d.active ? ('当前项目：' + d.active) : '未在进行项目';
+    document.getElementById('leaveBtn').style.display = d.active ? 'inline-block' : 'none';
+  });
+};
+window.escapeHtml = function(s){
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  });
+};
+window.chatHistory = [];
+window.askAi = function(){
+  var q = document.getElementById('askq').value.trim();
+  if(!q){ return; }
+  document.getElementById('askq').value = '';
+  var chat = document.getElementById('chat');
+  chat.innerHTML += '<div class="item"><b style="color:#4f46e5">我：</b>' + escapeHtml(q) + '</div>';
+  var loading = document.createElement('div');
+  loading.className = 'mut';
+  loading.textContent = 'AI 思考中...';
+  chat.appendChild(loading);
+  chat.scrollTop = chat.scrollHeight;
+  window.chatHistory.push({role:'user', content:q});
+  api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, history:window.chatHistory})})
+    .then(function(d){
+      chat.removeChild(loading);
+      chat.innerHTML += '<div class="item"><b style="color:#059669">AI：</b><span style="white-space:pre-wrap">' + escapeHtml(d.reply) + '</span></div>';
+      window.chatHistory.push({role:'assistant', content:d.reply});
+      chat.scrollTop = chat.scrollHeight;
+    })
+    .catch(function(){
+      chat.removeChild(loading);
+      chat.innerHTML += '<div class="item" style="color:#dc2626">问AI失败，请重试</div>';
+    });
+};
+window.onload = function(){
+  loadRecent(); loadProj(); loadCtx();
+  document.getElementById('file').addEventListener('change', onfile);
+  document.getElementById('askq').addEventListener('keydown', function(e){
+    if(e.key === 'Enter'){ askAi(); }
+  });
+};
+</script>
+</body>
+</html>
