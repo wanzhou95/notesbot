@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# 提交前敏感信息扫描 —— 命中即拒绝提交
+# 安装：cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#
+# 敏感串清单放在 scripts/sensitive-patterns.txt（已 gitignore，不会入库）。
+# 之所以不把敏感串直接写在这个脚本里，是因为这个脚本本身是要公开的——
+# 把真实 IP 写进防泄漏脚本，等于把地图贴在门锁上。
+
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+PATTERN_FILE="scripts/sensitive-patterns.txt"
+
+if [ ! -f "$PATTERN_FILE" ]; then
+  echo "⚠️  未找到 $PATTERN_FILE，跳过敏感信息扫描。"
+  echo "   建议：cp scripts/sensitive-patterns.txt.example $PATTERN_FILE 并填入你的敏感串。"
+  exit 0
+fi
+
+# 过滤空行和注释，用 | 拼成正则
+PATTERNS=$(grep -vE '^\s*(#|$)' "$PATTERN_FILE" | paste -sd '|' -)
+if [ -z "$PATTERNS" ]; then
+  echo "⚠️  $PATTERN_FILE 为空，跳过扫描。"
+  exit 0
+fi
+
+FOUND=0
+# 逐个检查本次暂存的文件内容（只扫新增行，避免老内容反复拦截）
+for f in $(git diff --cached --name-only --diff-filter=ACM); do
+  [ -f "$f" ] || continue
+  case "$f" in
+    # 二进制和锁文件不扫
+    *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.pdf|*.woff|*.woff2|*.ttf|*.zip|*.gz|*.db|*.sqlite*) continue ;;
+  esac
+  HITS=$(grep -nE "$PATTERNS" "$f" 2>/dev/null)
+  if [ -n "$HITS" ]; then
+    echo "❌ 敏感信息命中：$f"
+    echo "$HITS" | sed 's/^/     /'
+    FOUND=1
+  fi
+done
+
+if [ "$FOUND" -eq 1 ]; then
+  echo ""
+  echo "提交已被阻止。请把上述内容移到 .env 或私有配置仓库后再提交。"
+  echo "确需强行提交（不推荐）：git commit --no-verify"
+  exit 1
+fi
+
+exit 0

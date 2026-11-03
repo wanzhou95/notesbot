@@ -11,6 +11,11 @@ venv/
 !.env.example
 set-secret.sh
 
+# 私有配置仓库挂载点 / 私有扩展
+private/
+extras/
+scripts/sensitive-patterns.txt
+
 # 运行时数据
 data/
 *.db
