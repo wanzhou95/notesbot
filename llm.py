@@ -1,4 +1,5 @@
 import json
+import time
 
 import httpx
 
@@ -6,6 +7,16 @@ from config import ENV, DATA_DIR
 
 # 模型开关设置（设置页修改，落盘立即生效，无需重启服务）
 SETTINGS_FILE = DATA_DIR / "model_settings.json"
+# 模型调用日志（每次成功调用记一行：时间/厂商/模型/档位），供回溯"这次用的哪个模型"
+USAGE_LOG = DATA_DIR / "model_usage.log"
+
+
+def log_usage(prov, model, tier=""):
+    try:
+        with open(USAGE_LOG, "a", encoding="utf-8") as f:
+            f.write("%s\t%s\t%s\t%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), prov, model, tier))
+    except Exception:
+        pass
 
 
 def load_model_settings():
@@ -71,11 +82,13 @@ class LLMRouter:
                 if prov == "ds":
                     if not self.ds_key:
                         continue
-                    return self._call(self.ds_url, self.ds_key, model, messages, max_tokens)
+                    out = self._call(self.ds_url, self.ds_key, model, messages, max_tokens)
                 else:
                     if not self.glm_key:
                         continue
-                    return self._call(self.glm_url, self.glm_key, model, messages, max_tokens, glm=True)
+                    out = self._call(self.glm_url, self.glm_key, model, messages, max_tokens, glm=True)
+                log_usage(prov, model, tier)  # 记录本次实际用的模型，便于回溯
+                return out
             except Exception as e:
                 last_err = e
                 continue
