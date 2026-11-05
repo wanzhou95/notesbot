@@ -163,12 +163,12 @@ def export_api(request: Request, slug: str = "", fmt: str = "docx"):
     u = require(request)
     if fmt not in MEDIA_TYPES:
         raise HTTPException(400, "格式只支持 docx / pdf")
-    st = storage.load_state(u)
-    info = st.get("projects", {}).get(slug)
-    if not info:
-        raise HTTPException(404, "项目不存在")
-    if info.get("version", 0) <= 0:
-        raise HTTPException(400, "该项目还没有行动攻略")
+    import tasks
+    t = tasks.read_task(u, slug)
+    if not t:
+        raise HTTPException(404, "任务不存在")
+    if not t.get("version"):
+        raise HTTPException(400, "该任务还没有行动攻略")
     import export as export_mod
     try:
         out = export_mod.export(u, slug, fmt)
@@ -177,7 +177,7 @@ def export_api(request: Request, slug: str = "", fmt: str = "docx"):
     except Exception as e:
         raise HTTPException(500, "导出失败：%s" % e)
     from urllib.parse import quote
-    filename = quote("%s-行动攻略.%s" % (info.get("name", slug), fmt))
+    filename = quote("%s-行动攻略.%s" % (t["name"], fmt))
     return FileResponse(str(out), media_type=MEDIA_TYPES[fmt],
                         headers={"Content-Disposition": "attachment; filename*=UTF-8''%s" % filename})
 
@@ -289,7 +289,134 @@ def process_api(request: Request, body: dict):
 def projects(request: Request):
     u = require(request)
     st = storage.load_state(u)
-    return {"list": st.get("projects", {}), "active": st.get("active")}
+    return {"list": storage.list_projects(u), "active": st.get("active")}
+
+
+# ---- 任务体系（文件为唯一真相，Obsidian 勾完这里就能看到）----
+
+def _task_node(t, kids):
+    import tasks
+    d = {
+        "slug": t["slug"], "name": t["name"], "status": t["status"],
+        "done": t["done"], "total": t["total"],
+        "parent": t["parent"], "related": t["related"],
+        "version": t["version"], "updated": t["updated"],
+        "path": t["path"], "steps": t["steps"], "mtime": t["mtime"],
+    }
+    d["children"] = [_task_node(c, kids)
+                     for c in sorted(kids.get(t["name"], []), key=lambda x: x["mtime"], reverse=True)]
+    return d
+
+
+@app.get("/api/tasks")
+def api_tasks(request: Request):
+    u = require(request)
+    import tasks
+    st = storage.load_state(u)
+    ts = tasks.list_tasks(u)
+    by_name = {t["name"]: t for t in ts}
+    kids, roots = {}, []
+    for t in ts:
+        p = t.get("parent")
+        if p and p in by_name and p != t["name"]:
+            kids.setdefault(p, []).append(t)
+        else:
+            roots.append(t)
+    groups = {}
+    for key in ("todo", "doing", "done"):
+        groups[key] = [_task_node(t, kids) for t in
+                       sorted([x for x in roots if x["status"] == key],
+                              key=lambda x: x["mtime"], reverse=True)]
+    return {"groups": groups, "stats": tasks.stats(u, ts), "active": st.get("active")}
+
+
+@app.post("/api/task/new")
+def api_task_new(request: Request, body: dict):
+    u = require(request)
+    import tasks
+    name = (body.get("name") or "").strip()
+    status = body.get("status") or "todo"
+    if status not in ("todo", "doing"):
+        status = "todo"
+    parent = (body.get("parent") or "").strip() or None
+    slug, new = tasks.create_task(u, name, status=status, parent=parent)
+    if not slug:
+        return JSONResponse({"ok": False, "err": "任务名不能为空"})
+    if status == "doing":
+        st = storage.load_state(u)
+        st["active"] = slug
+        storage.save_state(u, st)
+    return {"ok": True, "slug": slug, "new": new}
+
+
+@app.post("/api/task/step")
+def api_task_step(request: Request, body: dict):
+    u = require(request)
+    import tasks
+    slug = (body.get("slug") or "").strip()
+    try:
+        n = int(body.get("n") or 0)
+    except Exception:
+        n = 0
+    if not slug or n <= 0:
+        raise HTTPException(400, "参数不全")
+    ok = tasks.set_step_done(u, slug, n, bool(body.get("done", True)))
+    return {"ok": ok}
+
+
+@app.post("/api/task/status")
+def api_task_status(request: Request, body: dict):
+    u = require(request)
+    import tasks
+    slug = (body.get("slug") or "").strip()
+    status = (body.get("status") or "").strip()
+    if status not in ("todo", "doing", "done"):
+        raise HTTPException(400, "状态不合法")
+    ok = tasks.set_status(u, slug, status)
+    if ok:
+        st = storage.load_state(u)
+        if status == "done" and st.get("active") == slug:
+            st["active"] = None
+            storage.save_state(u, st)
+        elif status == "doing":
+            st["active"] = slug
+            storage.save_state(u, st)
+    return {"ok": ok}
+
+
+@app.post("/api/task/link")
+def api_task_link(request: Request, body: dict):
+    """设置上级 / 添加相关任务。"""
+    u = require(request)
+    import tasks
+    slug = (body.get("slug") or "").strip()
+    parent = (body.get("parent") or "").strip()
+    related = [x for x in (body.get("related") or []) if x]
+    if not slug:
+        raise HTTPException(400, "缺少 slug")
+    if parent:
+        tasks.set_parent(u, slug, parent)
+    if related:
+        tasks.add_related(u, slug, related)
+    return {"ok": True}
+
+
+@app.post("/api/digest")
+def api_digest(request: Request, body: dict):
+    """手动触发一轮归纳（定时任务同一套逻辑）。"""
+    u = require(request)
+    import digest
+    try:
+        return digest.run(u, dry_run=bool(body.get("dry_run")))
+    except Exception as e:
+        return JSONResponse({"ok": False, "err": str(e)})
+
+
+@app.get("/api/skills")
+def api_skills(request: Request):
+    u = require(request)
+    import digest
+    return {"list": digest.list_skills(u)}
 
 
 @app.get("/api/ctx")
@@ -297,8 +424,12 @@ def ctx(request: Request):
     u = require(request)
     st = storage.load_state(u)
     active = st.get("active")
-    name = st.get("projects", {}).get(active, {}).get("name", active) if active else None
-    return {"active": name}
+    name = None
+    if active:
+        import tasks
+        t = tasks.read_task(u, active)
+        name = t["name"] if t else active
+    return {"active": name, "slug": active}
 
 
 @app.post("/api/ask")

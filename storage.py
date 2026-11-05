@@ -102,40 +102,20 @@ def asset_path(user, rel):
     return p
 
 
-# ---------------- 项目会话 ----------------
+# ---------------- 项目会话（委托 tasks 模块，文件为唯一真相） ----------------
 
 def create_project(user, name):
-    ts = now()
-    slug = "%s-%s" % (ts.strftime("%Y-%m-%d"), slugify(name, 30))
-    base = user_dir(user) / "01-Projects" / slug
-    if base.exists():
-        return slug, False
-    base.mkdir(parents=True, exist_ok=True)
-    meta = [
-        "---",
-        "title: %s" % name,
-        "status: active",
-        "created: %s" % ts.strftime("%Y-%m-%d %H:%M"),
-        "updated: %s" % ts.strftime("%Y-%m-%d %H:%M"),
-        "version: 0",
-        "---",
-        "",
-        "# %s" % name,
-    ]
-    (base / "_project.md").write_text("\n".join(meta) + "\n", encoding="utf-8")
-    (base / "步骤记录.md").write_text("# 步骤记录\n", encoding="utf-8")
+    """新建任务并切为当前项目。已完成/待办的同名任务会被重新打开为进行中。"""
+    import tasks
+    slug, new = tasks.create_task(user, name, status="doing")
+    if not slug:
+        return None, False
+    if not new:
+        tasks.set_status(user, slug, "doing")
     st = load_state(user)
-    st["projects"][slug] = {
-        "name": name,
-        "status": "active",
-        "steps": 0,
-        "created": ts.strftime("%Y-%m-%d %H:%M"),
-        "version": 0,
-        "changelog": [],
-    }
     st["active"] = slug
     save_state(user, st)
-    return slug, True
+    return slug, new
 
 
 def project_dir(user, slug):
@@ -143,19 +123,8 @@ def project_dir(user, slug):
 
 
 def append_step(user, slug, text):
-    base = project_dir(user, slug)
-    base.mkdir(parents=True, exist_ok=True)
-    ts = now()
-    st = load_state(user)
-    info = st["projects"].setdefault(slug, {"name": slug, "status": "active", "steps": 0, "version": 0, "changelog": []})
-    n = info.get("steps", 0) + 1
-    with open(base / "步骤记录.md", "a", encoding="utf-8") as f:
-        f.write("[%02d] %s %s\n" % (n, ts.strftime("%H:%M"), text.strip()))
-    info["steps"] = n
-    info["status"] = "active"
-    save_state(user, st)
-    _reindex(user, base / "步骤记录.md")
-    return n
+    import tasks
+    return tasks.append_step(user, slug, text)
 
 
 def read_steps(user, slug):
@@ -185,12 +154,19 @@ def strip_md_fence(text: str) -> str:
 
 
 def write_guide(user, slug, content, note=""):
+    import tasks
     content = strip_md_fence(content)
     base = project_dir(user, slug)
     ts = now()
-    st = load_state(user)
-    info = st["projects"].get(slug, {})
-    ver = round(info.get("version", 0) + 1, 1)
+    gp = base / "行动攻略.md"
+    old_ver = 0
+    if gp.exists():
+        try:
+            raw, _ = tasks.split_fm(gp.read_text(encoding="utf-8"))
+            old_ver = float(tasks.parse_fm(raw).get("version", 0) or 0)
+        except Exception:
+            old_ver = 0
+    ver = round(old_ver + 1, 1)
     header = [
         "---",
         "version: %s" % ver,
@@ -198,25 +174,32 @@ def write_guide(user, slug, content, note=""):
         "---",
         "",
     ]
-    (base / "行动攻略.md").write_text("\n".join(header) + content.strip() + "\n", encoding="utf-8")
-    info["version"] = ver
-    info["status"] = "done"
-    if note:
-        info.setdefault("changelog", []).append("v%s %s" % (ver, note))
-    meta = base / "_project.md"
-    if meta.exists():
-        t = meta.read_text(encoding="utf-8")
-        t = re.sub(r"status: \w+", "status: done", t)
-        t = re.sub(r"version: [\d.]+", "version: %s" % ver, t)
-        meta.write_text(t, encoding="utf-8")
-    save_state(user, st)
-    _reindex(user, base / "行动攻略.md")
+    gp.write_text("\n".join(header) + content.strip() + "\n", encoding="utf-8")
+    # 任务状态置为已完成（同时刷新总览与索引）
+    tasks.set_status(user, slug, "done")
+    _reindex(user, gp)
     return ver
 
 
 def list_projects(user):
-    st = load_state(user)
-    return st.get("projects", {})
+    """从文件读取任务清单，返回旧格式的字典（兼容 /api/projects 与导出逻辑）。"""
+    import tasks
+    out = {}
+    for t in tasks.list_tasks(user):
+        out[t["slug"]] = {
+            "name": t["name"],
+            "status": t["status"],
+            "steps": t["total"],
+            "done_steps": t["done"],
+            "created": t["created"],
+            "updated": t["updated"],
+            "version": t["version"],
+            "changelog": [],
+            "parent": t["parent"],
+            "related": t["related"],
+            "path": t["path"],
+        }
+    return out
 
 
 # ---------------- 检索 ----------------
@@ -242,7 +225,7 @@ def search(user, query, limit=5):
     for p in sorted(root.rglob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True):
         if ".git" in p.parts or "_index" in p.parts or ".stversions" in p.parts or ".obsidian" in p.parts or ".trash" in p.parts:
             continue
-        if p.name in ("_project.md", "欢迎.md"):
+        if p.name in ("_project.md", "欢迎.md", "00-任务总览.md"):
             continue
         rel = str(p.relative_to(root))
         if rel in seen:

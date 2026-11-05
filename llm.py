@@ -62,10 +62,14 @@ class LLMRouter:
         if r.status_code != 200:
             raise RuntimeError("HTTP %s %s" % (r.status_code, r.text[:100]))
         data = r.json()
-        msg = data["choices"][0]["message"]
-        content = msg.get("content")
+        choice = data["choices"][0]
+        msg = choice.get("message") or {}
+        content = (msg.get("content") or "").strip()
         if not content:
-            content = msg.get("reasoning_content") or ""
+            # 绝不能把 reasoning_content 当正文返回：那是模型的思考过程，
+            # 混进结果会污染笔记/技能卡。宁可抛错让降级链换下一个模型。
+            raise RuntimeError("模型无正文输出（finish_reason=%s，通常是想太多把 token 用光了）"
+                               % choice.get("finish_reason"))
         return content
 
     def chat_messages(self, messages, tier="main", max_tokens=1500, models=None):

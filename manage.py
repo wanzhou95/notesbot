@@ -89,6 +89,48 @@ def cmd_reindex(args):
             print("已重建 %s 的索引：%d 个片段" % (r["name"], n))
 
 
+def cmd_migrate(args):
+    """把旧的 _project.md 迁移成 <任务名>.md（Obsidian 双链前提）。"""
+    import tasks
+    names = [args.name] if args.name else [r["name"] for r in users.list_users()]
+    for name in names:
+        print("=== %s ===" % name)
+        try:
+            rep = tasks.migrate(name)
+        except Exception as e:
+            print("  失败：%s" % e)
+            continue
+        if not rep:
+            print("  （没有需要迁移的旧任务）")
+        for line in rep:
+            print("  " + line)
+
+
+def cmd_digest(args):
+    """手动跑一轮归纳（定时任务同一套逻辑）。"""
+    import digest
+    if args.name:
+        res = digest.run(args.name, limit=args.limit, dry_run=args.dry)
+        if res.get("dry_run"):
+            print("待归纳 %d 个（候选 %d，已跳过 %d）：" % (res["pending"], res["candidates"], res["skipped"]))
+            for t, k, key in res["items"]:
+                print("  - %s（%s）" % (t, key))
+            return
+        print("%s：处理 %d 个，跳过 %d 个，失败 %d 个，耗时 %.1fs" % (
+            args.name, len(res.get("done", [])), res.get("skipped", 0),
+            len(res.get("failed", [])), res.get("elapsed", 0)))
+        for t, k, rel in res.get("done", []):
+            print("  ✓ %s → %s" % (t, rel))
+        for t, e in res.get("failed", []):
+            print("  ✗ %s：%s" % (t, e))
+    else:
+        for name, res in digest.run_all(limit=args.limit).items():
+            if "error" in res:
+                print("%s：失败 %s" % (name, res["error"]))
+            else:
+                print("%s：处理 %d 个，跳过 %d 个" % (name, len(res.get("done", [])), res.get("skipped", 0)))
+
+
 def main():
     p = argparse.ArgumentParser(description="NotesBot 管理工具")
     sub = p.add_subparsers(dest="cmd")
@@ -109,12 +151,21 @@ def main():
     r = sub.add_parser("reindex", help="重建语义索引")
     r.add_argument("name", nargs="?", default=None)
 
+    m = sub.add_parser("migrate", help="迁移旧任务文件（_project.md → 任务名.md）")
+    m.add_argument("name", nargs="?", default=None)
+
+    d = sub.add_parser("digest", help="跑一轮归纳（任务/笔记 → 技能卡）")
+    d.add_argument("name", nargs="?", default=None)
+    d.add_argument("--limit", type=int, default=None, help="本次最多处理几个")
+    d.add_argument("--dry", action="store_true", help="只列出待归纳项，不实际调用模型")
+
     args = p.parse_args()
     if not args.cmd:
         p.print_help()
         sys.exit(0)
     {"init": cmd_init, "adduser": cmd_adduser, "passwd": cmd_passwd,
-     "list": cmd_list, "reindex": cmd_reindex}[args.cmd](args)
+     "list": cmd_list, "reindex": cmd_reindex,
+     "migrate": cmd_migrate, "digest": cmd_digest}[args.cmd](args)
 
 
 if __name__ == "__main__":
