@@ -533,6 +533,38 @@ def api_video_status(request: Request, id: str = ""):
     return j
 
 
+@app.get("/api/video-cookies")
+def get_video_cookies(request: Request):
+    """Cookie 配置状态（不返回明文）。"""
+    require(request)
+    import video
+    return {
+        "bili_set": video.BILI_COOKIE_FILE.exists(),
+        "ytdlp_set": video.COOKIE_FILE.exists(),
+        "douyin_ready": (video.DOUYIN_YDLP_DIR / "yt_dlp").is_dir(),
+    }
+
+
+@app.post("/api/video-cookies")
+def set_video_cookies(request: Request, body: dict):
+    """保存 B 站 / 通用平台 Cookie，落盘即生效（仅管理员）。"""
+    u = require(request)
+    if config.load_users().get(u, {}).get("role") != "admin":
+        return JSONResponse({"ok": False, "err": "只有管理员可以修改"})
+    import video
+    bili = (body.get("bili") or "").strip()
+    ytdlp = (body.get("ytdlp") or "").strip()
+    if bili:
+        video.BILI_COOKIE_FILE.write_text(bili.replace("\n", "").strip(), encoding="utf-8")
+    elif video.BILI_COOKIE_FILE.exists():
+        video.BILI_COOKIE_FILE.unlink()
+    if ytdlp:
+        video.COOKIE_FILE.write_text(ytdlp.strip() + "\n", encoding="utf-8")
+    elif video.COOKIE_FILE.exists():
+        video.COOKIE_FILE.unlink()
+    return {"ok": True}
+
+
 @app.post("/api/ask")
 def ask(request: Request, body: dict):
     u = require(request)

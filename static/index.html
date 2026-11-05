@@ -199,6 +199,18 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
       <span id="setmsg" class="mut"></span>
     </div>
   </div>
+  <div class="card">
+    <div class="mut">视频平台 Cookie（抖音<b>不需要</b>，已内置签名补丁；B 站填了能看字幕/更高音质，YouTube 等填 cookies.txt）</div>
+    <div class="tk-group">B 站 SESSDATA（可选）</div>
+    <textarea id="ck-bili" class="inp" rows="2" placeholder="SESSDATA=xxxx; bili_jct=xxxx（粘贴后去掉换行，一行即可）"></textarea>
+    <div class="tk-group">yt-dlp cookies.txt（可选，Netscape 格式）</div>
+    <textarea id="ck-ytdlp" class="inp" rows="4" placeholder="从浏览器用 Get cookies.txt / EditThisCookie 导出，整个文件粘进来（给 YouTube 等需要登录的平台）"></textarea>
+    <div class="mut" id="ckstatus" style="margin-top:6px"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" style="width:auto" onclick="saveVideoCookies()">保存 Cookie</button>
+      <button class="btn ghost" style="width:auto" onclick="clearVideoCookies()">清空</button>
+    </div>
+  </div>
 </div>
 </div>
 <div id="viewer" class="viewer" onclick="if(event.target===this)closeNote()">
@@ -794,6 +806,44 @@ window.loadSettings = function(){
         box.appendChild(row);
       });
       renderPmRow();
+    });
+  loadVideoCookies();
+};
+
+window.loadVideoCookies = function(){
+  api('/api/video-cookies').then(function(d){
+    var s = document.getElementById('ckstatus');
+    var parts = [];
+    parts.push(d.douyin_ready ? '抖音：✅ 签名补丁已就绪' : '抖音：❌ 补丁缺失');
+    parts.push(d.bili_set ? 'B 站 Cookie：已配置' : 'B 站 Cookie：未配置');
+    parts.push(d.ytdlp_set ? '通用 cookies.txt：已配置' : '通用 cookies.txt：未配置');
+    s.textContent = parts.join('　');
+  }).catch(function(){});
+};
+
+window.saveVideoCookies = function(){
+  var body = {
+    bili: document.getElementById('ck-bili').value.trim(),
+    ytdlp: document.getElementById('ck-ytdlp').value.trim()
+  };
+  api('/api/video-cookies', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)})
+    .then(function(d){
+      var s = document.getElementById('ckstatus');
+      if(d.ok){ s.textContent = '已保存，立即生效 ✓（清空输入框并保存即可删除）'; loadVideoCookies(); }
+      else { s.textContent = d.err || d.detail || '保存失败'; }
+    });
+};
+
+window.clearVideoCookies = function(){
+  document.getElementById('ck-bili').value = '';
+  document.getElementById('ck-ytdlp').value = '';
+  api('/api/video-cookies', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({bili:'', ytdlp:''})})
+    .then(function(d){
+      var s = document.getElementById('ckstatus');
+      s.textContent = d.ok ? '已清空' : (d.err || '失败');
+      loadVideoCookies();
     });
 };
 function renderPmRow(){

@@ -28,10 +28,12 @@ VIDEO_DIR        视频笔记目录（默认 03-Resources/视频字幕）
 BILI_COOKIE      可选，B 站登录 Cookie（如 `SESSDATA=xxx`），能解锁字幕/更高音质
 YTDLP_COOKIES    可选，cookies.txt 路径，给抖音等需要登录的平台用
 """
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from datetime import datetime
@@ -48,17 +50,28 @@ VIDEO_DIR = ENV.get("VIDEO_DIR", "03-Resources/视频字幕").strip("/")
 WORK_ROOT = DATA_DIR / "video_work"
 MAX_MINUTES = int(ENV.get("VIDEO_MAX_MIN", "180") or 180)
 ASR_MODEL = ENV.get("MODEL_ASR", "glm-asr-2512").strip() or "glm-asr-2512"
-COOKIE_FILE = ENV.get("YTDLP_COOKIES", "").strip()
 CHUNK_SEC = 28
 VIDEO_EXTS = {"mp4", "mkv", "mov", "avi", "flv", "webm", "m4v", "ts", "wmv", "mpg", "mpeg"}
 AUDIO_EXTS = {"mp3", "m4a", "wav", "aac", "flac", "ogg", "opus", "amr"}
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
+# —— 运行时 Cookie（网页「设置」页粘贴，落盘即生效，不用重启）——
+COOKIE_FILE = DATA_DIR / "ytdlp_cookies.txt"        # 通用平台 cookies.txt（YouTube 等）
+BILI_COOKIE_FILE = DATA_DIR / "bili_cookie.txt"     # B 站 SESSDATA 等（解锁字幕/更高音质）
+# 抖音走 fork 版 yt-dlp（内置 secsdk 签名，免 cookie），见 douyin_*()
+DOUYIN_YDLP_DIR = DATA_DIR / "douyin-ytdlp"
+
 URL_RE = re.compile(r"^https?://\S+$")
 VIDEO_HOSTS = ("bilibili.com", "b23.tv", "douyin.com", "iesdouyin.com", "kuaishou.com",
                "xiaohongshu.com", "xhslink.com", "ixigua.com", "youtube.com", "youtu.be",
                "v.qq.com", "youku.com", "iqiyi.com", "weibo.com", "ixigua.com")
+DOUYIN_HOSTS = ("douyin.com", "iesdouyin.com")
+
+
+def is_douyin(url):
+    return any(h in (url or "").lower() for h in DOUYIN_HOSTS)
+
 
 
 # ---------------- 基础工具 ----------------
@@ -148,7 +161,11 @@ def _bili_client():
             c.cookies.set("buvid4", d["b_4"], domain=".bilibili.com")
     except Exception:
         pass
-    raw = ENV.get("BILI_COOKIE", "").strip()   # 可选：登录 Cookie，能看字幕
+    raw = ""                                        # 登录 Cookie（网页设置页可填）
+    try:
+        raw = BILI_COOKIE_FILE.read_text(encoding="utf-8").strip()
+    except Exception:
+        raw = ENV.get("BILI_COOKIE", "").strip()
     if raw:
         for part in raw.split(";"):
             if "=" in part:
@@ -244,10 +261,73 @@ def _ydl(opts):
     import yt_dlp
     base = {"quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True,
             "retries": 2, "socket_timeout": 20, "http_headers": {"User-Agent": UA}}
-    if COOKIE_FILE:
-        base["cookiefile"] = COOKIE_FILE
+    cookie = ENV.get("YTDLP_COOKIES", "").strip()
+    if cookie:
+        base["cookiefile"] = cookie
+    elif COOKIE_FILE.exists():                    # 网页「设置」页保存的 cookies.txt
+        base["cookiefile"] = str(COOKIE_FILE)
     base.update(opts)
     return yt_dlp.YoutubeDL(base)
+
+
+# ---------------- 抖音：fork 版 yt-dlp（免 cookie，内置 secsdk 签名） ----------------
+#
+# 官方 yt-dlp 的 DouyinIE 走 aweme/v1/web/aweme/detail 但没签 x-secsdk-web-signature，
+# 加任何 cookie 都报 "Fresh cookies needed"。所以抖音不走 cookie，走 douyin-fix fork
+# （见 data/douyin-ytdlp/COMMIT）。用 subprocess 隔离，避免污染主 venv 的 yt-dlp。
+
+def _douyin_ydl(args, timeout=300):
+    if not (DOUYIN_YDLP_DIR / "yt_dlp").is_dir():
+        raise RuntimeError("抖音补丁版 yt-dlp 未安装（data/douyin-ytdlp 缺 yt_dlp）")
+    r = subprocess.run([sys.executable, "-m", "yt_dlp", "--no-warnings"] + args,
+                       cwd=str(DOUYIN_YDLP_DIR), capture_output=True, timeout=timeout)
+    return r
+
+
+def _douyin_expand(url):
+    """v.douyin.com / iesdouyin.com 短链展开成 www.douyin.com/video/<id>。"""
+    if "v.douyin.com" in url or "iesdouyin.com" in url:
+        try:
+            with httpx.Client(timeout=30, follow_redirects=True,
+                              headers={"User-Agent": UA}) as c:
+                final = str(c.get(url).url)
+            if "douyin.com/video/" in final:
+                return final
+        except Exception:
+            pass
+    return url
+
+
+def douyin_info_and_audio(url, workdir):
+    """抖音：fork 版下音频，返回 (meta, 音频路径)。"""
+    url = _douyin_expand(url)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    r = _douyin_ydl(["--skip-download", "--dump-single-json", url])
+    if r.returncode != 0 or not r.stdout.strip():
+        err = (r.stderr or b"").decode("utf-8", "ignore").strip()
+        raise RuntimeError("抖音解析失败：%s" % (err[-160:] or "无返回"))
+    info = json.loads(r.stdout)
+    raw_title = (info.get("title") or info.get("description") or "未命名视频")
+    # 抖音标题常带 #话题，取第一个非空片段当标题，其余丢掉
+    title = next((s.strip() for s in re.split(r"#", raw_title) if s.strip()), "")
+    meta = {
+        "title": title or "抖音视频",
+        "duration": float(info.get("duration") or 0),
+        "platform": "douyin",
+        "uploader": (info.get("uploader") or info.get("channel") or ""),
+        "source": info.get("webpage_url") or url,
+    }
+
+    out_tpl = str(workdir / "audio.%(ext)s")
+    r = _douyin_ydl(["-f", "bestaudio/best", "-o", out_tpl, url], timeout=900)
+    if r.returncode != 0:
+        err = (r.stderr or b"").decode("utf-8", "ignore").strip()
+        raise RuntimeError("抖音音频下载失败：%s" % err[-160:])
+    files = [p for p in workdir.glob("audio.*") if p.suffix.lower() != ".part"]
+    if not files:
+        raise RuntimeError("抖音音频下载失败（没有产出文件）")
+    return meta, max(files, key=lambda p: p.stat().st_size)
 
 
 def ytdlp_info(url):
@@ -713,6 +793,13 @@ def _run(jid, url, file_path):
                     else:
                         _set(jid, stage="下载音频")
                         src = bili_audio(meta, work)
+                elif is_douyin(url):
+                    _set(jid, stage="下载抖音视频")
+                    meta, src = douyin_info_and_audio(url, work)
+                    _set(jid, title=meta["title"])
+                    if meta["duration"] > MAX_MINUTES * 60:
+                        raise RuntimeError("视频 %.0f 分钟，超过上限 %d 分钟"
+                                           % (meta["duration"] / 60, MAX_MINUTES))
                 else:
                     _set(jid, stage="解析链接")
                     meta = ytdlp_info(url)

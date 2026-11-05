@@ -406,6 +406,7 @@ Bot：按技能卡《关键帧操作》开了任务（共 4 步，已设为当�
 ```
 B 站链接 ──→ 官方 API 取标题/时长 ──┬─ 有平台字幕 → 直接拉（0 成本）
                                     └─ 没字幕 → 下 DASH 音频 → 切 28 秒段 → GLM-ASR
+抖音链接 ──→ fork 版 yt-dlp（内置签名，免 cookie）→ 下视频 → 切片 → GLM-ASR
 其它链接 ──→ yt-dlp ──→ 同上
 本地文件 ──→ 直接切片 → GLM-ASR
                 ↓
@@ -443,7 +444,24 @@ CDN（`*.bilivideo.cn`）下载正常，所以「下音频 → 转写」这条�
   人名术语不会每段重猜。
 - 默认单个视频上限 180 分钟（`VIDEO_MAX_MIN`），超了直接拒，防手滑。
 - 同一链接第二次提交不会重复花钱（按 frontmatter 的 `source` 去重）。
-- 抖音等平台经常要登录态：把浏览器导出的 `cookies.txt` 填到 `YTDLP_COOKIES` 再用。
+
+### 抖音为什么不用 cookie（真相）
+
+官方 yt-dlp 的抖音提取器走 `aweme/v1/web/aweme/detail/`，但**没有签 `x-secsdk-web-signature`**，
+所以加任何 cookie 都会报 `Fresh cookies needed`（源码里就写着 TODO）。正解是一个上游未合并的
+补丁（fork `viking1304/yt-dlp@douyin-fix`），它内置了签名，**免 cookie 直接下 1080p**。
+
+本服务把这个 fork 单独放在 `data/douyin-ytdlp/`（见 `COMMIT` 文件），抖音 URL 走 subprocess
+调用它，跟主 venv 的 yt-dlp 完全隔离。补丁失效时 `cd data/douyin-ytdlp && git pull` 更新即可。
+
+### Cookie 通道（给 B 站 / YouTube，不是给抖音）
+
+网页「设置」页 →「视频平台 Cookie」，两个框：
+
+- **B 站 SESSDATA**：填一行 `SESSDATA=xxx`，能解锁平台字幕和更高音质（不填也能用）。
+- **通用 cookies.txt**：给 YouTube 等需要登录态的平台（浏览器用 Get cookies.txt 插件导出）。
+
+粘贴后落盘即生效，不用重启，仅管理员可改。
 
 ### 依赖
 
