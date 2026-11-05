@@ -76,6 +76,12 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 <div id="pane-ask" class="pane" style="display:none">
   <div class="card">
     <div class="mut">直接问大模型，回答任何问题（不查你的笔记库）</div>
+    <div class="row" style="flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0 0;font-size:13px">
+      <span class="mut">增强模型（付费，勾选本次提问使用）：</span>
+      <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.3"> GLM-5.3 <span class="mut">旗舰</span></label>
+      <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.2"> GLM-5.2 <span class="mut">旗舰</span></label>
+      <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5"> GLM-5 <span class="mut">推荐·最便宜</span></label>
+    </div>
     <div id="chat" style="max-height:420px;overflow-y:auto;margin:10px 0"></div>
     <div class="row">
       <input id="askq" class="inp" style="flex:1" placeholder="问任何问题，回车或点发送">
@@ -303,15 +309,18 @@ window.askAi = function(){
   var q = document.getElementById('askq').value.trim();
   if(!q){ return; }
   document.getElementById('askq').value = '';
+  var models = [];
+  document.querySelectorAll('#pane-ask .pm').forEach(function(c){ if(c.checked){ models.push(c.value); } });
   var chat = document.getElementById('chat');
-  chat.innerHTML += '<div class="item"><b style="color:#4f46e5">我：</b>' + escapeHtml(q) + '</div>';
+  var tag = models.length ? '<span class="mut">[' + models.join('+') + ']</span> ' : '';
+  chat.innerHTML += '<div class="item"><b style="color:#4f46e5">我：</b>' + tag + escapeHtml(q) + '</div>';
   var loading = document.createElement('div');
   loading.className = 'mut';
   loading.textContent = 'AI 思考中...';
   chat.appendChild(loading);
   chat.scrollTop = chat.scrollHeight;
   window.chatHistory.push({role:'user', content:q});
-  api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, history:window.chatHistory})})
+  api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, history:window.chatHistory, models:models})})
     .then(function(d){
       chat.removeChild(loading);
       chat.innerHTML += '<div class="item"><b style="color:#059669">AI：</b><span style="white-space:pre-wrap">' + escapeHtml(d.reply) + '</span></div>';
