@@ -7,6 +7,7 @@ from langgraph.graph import StateGraph, END
 import storage
 import tasks
 import rag
+import skills
 from llm import LLMRouter
 
 llm = LLMRouter()
@@ -20,7 +21,10 @@ CMD_PATTERNS = [
     ("linkadd", re.compile(r"^\s*(关联|相关联?于)\s*[:：]?\s*(.+)$")),
     ("setparent", re.compile(r"^\s*(上级|父任务)\s*[:：]?\s*(.+)$")),
     ("skillmake", re.compile(r"^\s*(沉淀|存为技能|做成技能|整理成技能)\s*[:：]?\s*(.*)$")),
-    ("skilllist", re.compile(r"^\s*(技能列表|有哪些技能|技能清单)\s*$")),
+    ("skilllist", re.compile(r"^\s*(技能列表|有哪些技能|技能清单|技能卡)\s*$")),
+    # 「用 X / 按 X 做 / 技能 X」——只有 X 能对上技能卡时才算命令（见 node_classify 的二次校验）
+    ("skilluse", re.compile(r"^\s*(?:用|按|照着?|跟着?|调用|技能)\s*[《「]?(?P<arg>.+?)[》」]?\s*(?:来做|来走|做|走)?\s*$")),
+    ("skilluse", re.compile(r"^\s*(?:怎么做|如何做|怎么弄)\s*[《「]?(?P<arg>.+?)[》」]?\s*$")),
     ("end", re.compile(r"^\s*(结束|完成|收工)\s*$")),
     ("continue", re.compile(r"^\s*(继续|重开)\s*(.*)$")),
     ("list", re.compile(r"^\s*(列表|项目列表|任务列表|有哪些项目|有哪些任务)\s*$")),
@@ -70,12 +74,25 @@ def _split_names(arg):
     return [p for p in (x.strip() for x in parts) if p]
 
 
+def _pattern_arg(m):
+    """取匹配到的参数：新命令用命名组 arg，老命令用第 2 组。"""
+    d = m.groupdict()
+    if "arg" in d:
+        return (d["arg"] or "").strip()
+    return (m.group(2) if m.lastindex and m.lastindex >= 2 else "").strip()
+
+
 def node_classify(state: S) -> S:
     text = state["text"].strip()
     for cmd, pat in CMD_PATTERNS:
         m = pat.match(text)
-        if m:
-            return {**state, "intent": "cmd", "cmd": cmd, "arg": (m.group(2) if m.lastindex and m.lastindex >= 2 else "").strip()}
+        if not m:
+            continue
+        arg = _pattern_arg(m)
+        # 「用 剪映导出素材」这种普通记录句不能当命令：只有真能对上技能卡才执行
+        if cmd == "skilluse" and not skills.find_card(state["user"], arg):
+            continue
+        return {**state, "intent": "cmd", "cmd": cmd, "arg": arg}
 
     st = storage.load_state(state["user"])
     active = st.get("active")
@@ -251,18 +268,58 @@ def node_command(state: S) -> S:
                 return {**state, "reply": "没有已完成的任务可以沉淀。先把一个任务「结束」掉。"}
             slug = done[0]["slug"]
         title = arg.strip() or (tasks.read_task(user, slug) or {}).get("name", slug)
-        return {**state, "reply": digest.make_skill_card(user, slug, title)}
+        msg = digest.make_skill_card(user, slug, title)
+        if "已生成" in msg:
+            msg += "\n下次要做同类事，发「用 %s」把卡里的步骤变成任务，边做边勾。" % title
+        return {**state, "reply": msg}
 
     if cmd == "skilllist":
-        import digest
-        items = digest.list_skills(user)
+        items = skills.list_cards(user)
         if not items:
             return {**state, "reply": "05-Skills 还是空的。任务「结束」后发「沉淀 技能名」就能生成技能卡。"}
-        return {**state, "reply": "已沉淀的技能卡 %d 张：\n%s" % (len(items), "\n".join("• %s" % n for n in items))}
+        lines = ["技能卡 / 知识页共 %d 张：" % len(items)]
+        for c in items[:15]:
+            tag = "技能卡" if c["kind"] == "skill" else "知识页"
+            extra = "%d 步" % len(c["steps"]) if c["steps"] else "无步骤"
+            lines.append("• %s（%s·%s）" % (c["title"], tag, extra))
+        if len(items) > 15:
+            lines.append("…还有 %d 张，去网页「技能」页看全部。" % (len(items) - 15))
+        lines.append("")
+        lines.append("发「用 卡名」按卡里的步骤开一条任务，带你一步步走；写笔记或问 AI 时命中卡片会自动带上它。")
+        return {**state, "reply": "\n".join(lines)}
+
+    if cmd == "skilluse":
+        res = skills.use_card(user, arg)
+        if not res.get("ok"):
+            return {**state, "reply": res.get("err", "没找到这张技能卡") + "。发「技能列表」看有哪些。"}
+        card = res["card"]
+        if not res.get("slug"):
+            # 知识页 / 没有步骤的卡：给内容，不硬造任务
+            return {**state, "reply": "《%s》是知识页，没有可执行步骤，先看内容：\n\n%s\n\n"
+                                      "想动手做的话，发「开始 任务名」边做边记，做完再「沉淀」成技能卡。"
+                                      % (card["title"], skills.card_digest(card, 1200))}
+        t = tasks.read_task(user, res["slug"]) or {}
+        steps = t.get("steps", [])
+        lines = ["按技能卡《%s》%s（共 %d 步，已设为当前任务）：" % (
+            card["title"], "开了任务" if not res["existed"] else "接上任务", len(steps)), ""]
+        for s in steps:
+            lines.append("%d. %s" % (s["n"], s["text"]))
+        lines.append("")
+        lines.append("做完一步发「完成 N」，或网页/手机 Obsidian 里直接勾。")
+        if res["added"] == 0 and res["existed"]:
+            lines.append("（这张卡的步骤之前已经导进任务了，没重复添加）")
+        if card["pits"]:
+            lines.append("卡里记的坑：" + "；".join(card["pits"][:3]))
+        if card["checks"]:
+            lines.append("检查项 %d 条，收尾时对着核一遍（见 %s）。" % (len(card["checks"]), card["rel"]))
+        return {**state, "reply": "\n".join(lines)}
 
     if cmd == "note":
-        cat, path = _categorize_and_write(user, arg)
-        return {**state, "reply": "已存到「%s」：%s" % (cat, path.name)}
+        cat, path, card = _write_note(user, arg)
+        reply = "已存到「%s」：%s" % (cat, path.name)
+        if card:
+            reply += "\n顺带关联到技能卡《%s》：想按卡里的步骤做，发「用 %s」。" % (card["title"], card["title"])
+        return {**state, "reply": reply}
 
     if cmd == "export":
         done = [(t["slug"], t) for t in tasks.list_tasks(user) if t["version"] > 0]
@@ -303,14 +360,41 @@ def _categorize_and_write(user, text):
     return cat, storage.user_dir(user) / rel
 
 
+def _write_note(user, text):
+    """写笔记 + 顺手挂技能卡双链（A 向召回的最小实现）。
+
+    规则：笔记里出现某张卡的标题/别名（strict 模式）才挂，避免乱连线。
+    返回 (分类, 路径, 卡片或 None)。
+    """
+    cat, path = _categorize_and_write(user, text)
+    card = None
+    try:
+        hits = skills.related(user, text, limit=1, strict=True)
+        card = hits[0] if hits else None
+        if card:
+            skills.link_note(user, path, card)   # 已挂过会自己跳过
+    except Exception:
+        card = None
+    return cat, path, card
+
+
 def node_note(state: S) -> S:
-    cat, path = _categorize_and_write(state["user"], state["text"])
-    return {**state, "reply": "已存到「%s」：%s（说「开始 X」可开启项目记录）" % (cat, path.name)}
+    cat, path, card = _write_note(state["user"], state["text"])
+    reply = "已存到「%s」：%s（说「开始 X」可开启项目记录）" % (cat, path.name)
+    if card:
+        reply += "\n这条内容命中技能卡《%s》，已挂双链（Obsidian 里会连线）。" \
+                 "想按卡里的步骤做，发「用 %s」。" % (card["title"], card["title"])
+    return {**state, "reply": reply}
 
 
 def node_qa(state: S) -> S:
     user, text = state["user"], state["text"]
     parts = []
+    # 技能卡优先：库里已沉淀的流程比零散笔记更贴近「怎么做」，放最前面
+    card_ctx = skills.context_block(user, text, limit=2)
+    if card_ctx:
+        parts.append(card_ctx)
+
     # 任务感知：问题里提到任务名时，直接把文件里的实时进度塞进上下文（比 RAG 准）
     slug = tasks.find_task(user, text)
     if slug:
@@ -327,11 +411,13 @@ def node_qa(state: S) -> S:
     if ctx:
         parts.append("笔记片段：\n" + ctx[:4000])
     if not parts:
-        return {**state, "reply": "在自己的库里没找到相关内容。"}
+        return {**state, "reply": "在自己的库里没找到相关内容。库里还没沉淀技能卡的话，"
+                                  "做完一件事发「沉淀 技能名」就会有一张，之后问「怎么做」会自动带上它。"}
 
-    prompt = "基于下面的资料回答用户问题；没有依据就直说没找到，不要编造。\n\n%s\n\n问题：%s" % (
-        "\n\n".join(parts), text)
-    ans = llm.chat(prompt, tier="main", max_tokens=800)
+    prompt = ("基于下面的资料回答用户问题。资料里有技能卡时，优先按卡里的步骤回答，"
+              "并在开头注明「按《卡名》」；没有依据就直说没找到，不要编造。\n\n%s\n\n问题：%s" % (
+                  "\n\n".join(parts), text))
+    ans = llm.chat(prompt, tier="main", max_tokens=900)
     return {**state, "reply": ans}
 
 

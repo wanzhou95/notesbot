@@ -10,7 +10,7 @@ import config
 import storage
 import rag
 import users as users_mod
-from config import USERS, ENV, NOTES_ROOT, DATA_DIR
+from config import ENV, NOTES_ROOT, DATA_DIR
 from graph import build_graph, llm
 from llm import load_model_settings, save_model_settings
 
@@ -96,7 +96,9 @@ def login(body: dict):
     config.reload_users()  # 动态感知 adduser 新增的账号（无需重启）
     user = body.get("user", "")
     pw = body.get("pass", "")
-    if user not in USERS:
+    # 必须走 config.USERS：reload_users() 会重新绑定模块属性，
+    # 之前 from config import USERS 拿的是旧字典，新账号要重启才能登录。
+    if user not in config.USERS:
         return JSONResponse({"ok": False, "err": "用户名或密码错误"})
     if users_mod.verify(user, pw):
         token = make_session(user)
@@ -414,9 +416,36 @@ def api_digest(request: Request, body: dict):
 
 @app.get("/api/skills")
 def api_skills(request: Request):
+    """技能卡列表：给网页「技能」页渲染，也保留旧的 list 字段兼容。"""
     u = require(request)
-    import digest
-    return {"list": digest.list_skills(u)}
+    import skills
+    cards = skills.list_cards(u)
+    return {
+        "list": ["%s/%s" % (c["rel"].split("/")[0], c["stem"]) for c in cards],
+        "cards": [{
+            "rel": c["rel"], "title": c["title"], "kind": c["kind"],
+            "aliases": c["aliases"], "when": c["when"],
+            "steps": len(c["steps"]), "checks": len(c["checks"]),
+        } for c in cards],
+    }
+
+
+@app.post("/api/skill/use")
+def api_skill_use(request: Request, body: dict):
+    """网页「用它」：把技能卡步骤导成任务骨架。"""
+    u = require(request)
+    import skills
+    import tasks
+    res = skills.use_card(u, (body.get("title") or "").strip())
+    if not res.get("ok"):
+        return JSONResponse({"ok": False, "err": res.get("err", "没找到技能卡")})
+    card = res["card"]
+    if not res.get("slug"):
+        return {"ok": True, "slug": None, "title": card["title"],
+                "reply": "《%s》是知识页，没有可执行步骤。" % card["title"]}
+    t = tasks.read_task(u, res["slug"]) or {}
+    return {"ok": True, "slug": res["slug"], "title": card["title"],
+            "added": res["added"], "steps": [s["text"] for s in t.get("steps", [])]}
 
 
 @app.get("/api/ctx")
@@ -440,6 +469,13 @@ def ask(request: Request, body: dict):
         return {"reply": ""}
     history = body.get("history") or []
     msgs = []
+    # A 向召回：问 AI 时也带上库里已沉淀的技能卡（这是「自己的经验」而不是通用知识）
+    import skills
+    card_ctx = skills.context_block(u, q, limit=2)
+    if card_ctx:
+        msgs.append({"role": "system",
+                     "content": card_ctx + "\n\n以上资料里有技能卡时，优先按卡里的步骤回答，"
+                                           "并注明「按《卡名》」；卡里没写的别硬编。"})
     for m in history[-10:]:
         role = m.get("role")
         content = (m.get("content") or "").strip()

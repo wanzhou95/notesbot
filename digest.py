@@ -291,9 +291,16 @@ def _note_flagged(rel_path, text):
 def candidates(user):
     """受控候选池：已结束任务 + 标记 沉淀:true 的笔记。"""
     out = []
+    flow_name = getattr(tasks, "FLOW_NAME", "步骤记录.md")
     for t in tasks.list_tasks(user):
         if t["status"] != "done":
             continue
+        # 「用 技能卡」开出来的任务：步骤是卡里抄来的，你自己一步没记 →
+        # 归纳它只会把旧卡重抄一遍（自我喂养），直接跳过。
+        if t.get("source_skill"):
+            flow = user_dir(user) / tasks.PROJECTS / t["slug"] / flow_name
+            if not flow.exists():
+                continue
         src = _task_source(user, t["slug"], t)
         if not src.strip():
             continue

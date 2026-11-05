@@ -246,6 +246,7 @@ def read_task(user, slug):
         "version": _guide_version(base),
         "created": clean(fm.get("created")),
         "updated": clean(fm.get("updated")),
+        "source_skill": clean(fm.get("source_skill")),
         "mtime": mtime,
         "path": rel_path,
         "abs": str(main),
@@ -303,7 +304,7 @@ _BODY_TMPL = """# %(name)s
 """
 
 
-def create_task(user, name, status="todo", parent=None, related=None):
+def create_task(user, name, status="todo", parent=None, related=None, source_skill=None):
     name = re.sub(r"\s+", " ", (name or "").strip())
     name = re.sub(r"[\\/:*?\"<>|\n\r\t]", "", name)
     if not name:
@@ -333,7 +334,7 @@ def create_task(user, name, status="todo", parent=None, related=None):
         "parent: %s" % parent_cell,
         "related: [%s]" % rel_cell,
         "tags: []",
-    ])
+    ] + (["source_skill: %s" % source_skill] if source_skill else []))
     main = base / ("%s.md" % name)
     _write_raw(main, fm, body)
     _touch_index(main)
@@ -400,6 +401,33 @@ def append_step(user, slug, text, done=None):
     _touch_index(main)
     render_index(user)
     return n
+
+
+def append_steps(user, slug, texts, done=False):
+    """一次性追加多步（技能卡骨架用）：只写盘一次、只刷总览一次。
+
+    注意：不写「步骤记录.md」——那是你亲口记的东西，骨架步骤不算。
+    返回实际新增步数。
+    """
+    t = read_task(user, slug)
+    if not t:
+        return 0
+    items = [" ".join((x or "").split()) for x in (texts or [])]
+    items = [x for x in items if x]
+    if not items:
+        return 0
+    main = user_dir(user) / t["path"]
+    raw_text = main.read_text(encoding="utf-8")
+    fm_raw, body = split_fm(raw_text)
+    n = (max(s["n"] for s in t["steps"]) + 1) if t["steps"] else 1
+    block = "\n".join("- [%s] %d. %s" % ("x" if done else " ", n + i, tx)
+                      for i, tx in enumerate(items))
+    body = _insert_under(body, "步骤", block)
+    fm_raw = _fm_set(fm_raw, "updated", _ts())
+    _write_raw(main, fm_raw, body)
+    _touch_index(main)
+    render_index(user)
+    return len(items)
 
 
 def set_step_done(user, slug, n, done=True):

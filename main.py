@@ -3,7 +3,6 @@ from pydantic import BaseModel
 
 import config
 import users as users_mod
-from config import USERS
 from graph import build_graph
 
 app = FastAPI(title="NotesBot")
@@ -29,12 +28,14 @@ class Msg(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "users": list(USERS.keys())}
+    config.reload_users()
+    return {"ok": True, "users": list(config.USERS.keys())}
 
 
 @app.post("/debug/msg")
 def debug_msg(m: Msg):
-    if m.user not in USERS:
+    config.reload_users()
+    if m.user not in config.USERS:
         raise HTTPException(400, "unknown user: %s" % m.user)
     state = {"user": m.user, "channel": m.channel, "text": m.text,
              "intent": "", "cmd": "", "arg": "", "project": "", "reply": ""}

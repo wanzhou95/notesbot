@@ -65,15 +65,23 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .tk-box{width:15px;height:15px;border-radius:4px;border:1.5px solid #9ca3af;flex:none;cursor:pointer;margin-top:1px;box-sizing:border-box;position:relative}
 .tk-box.on{background:var(--acc);border-color:var(--acc)}
 .tk-box.on::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.sk{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--card)}
+.sk-hd{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.sk-hd b{font-size:14px}
+.sk-when{font-size:12px;color:var(--mut);margin-top:5px;line-height:1.5}
+.sk-acts{display:flex;gap:6px;justify-content:flex-end;margin-top:8px}
+.sk-acts button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:4px 12px;font-size:12px;cursor:pointer;color:var(--acc)}
+.sk-acts button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v6</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v7</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
 <button id="tab-search" onclick="switchPane('search')">搜索</button>
 <button id="tab-projects" onclick="switchPane('projects')">任务</button>
+<button id="tab-skills" onclick="switchPane('skills')">技能</button>
 <button id="tab-ask" onclick="switchPane('ask')">问AI</button>
 <button id="tab-settings" onclick="switchPane('settings')">设置</button>
 </div>
@@ -117,9 +125,19 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
     <div id="tklist"></div>
   </div>
 </div>
+<div id="pane-skills" class="pane" style="display:none">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span class="mut">技能卡 = 你做过的流程沉淀。「用它」把卡里的步骤变成任务，边做边勾。</span>
+      <button class="btn ghost" style="width:auto;padding:5px 10px;font-size:13px" onclick="loadSkills()">刷新</button>
+    </div>
+    <div id="skmsg" class="msg" style="display:none"></div>
+  </div>
+  <div class="card"><div id="sklist"></div></div>
+</div>
 <div id="pane-ask" class="pane" style="display:none">
   <div class="card">
-    <div class="mut">直接问大模型，回答任何问题（不查你的笔记库）</div>
+    <div class="mut">直接问大模型，回答任何问题；命中你已沉淀的技能卡时会优先按卡里的步骤答</div>
     <div class="row" style="flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0 0;font-size:13px" id="pmRow">
       <span class="mut">增强模型（付费，勾选本次提问使用）：</span>
       <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.3-flash"> GLM-5.3-Flash <span class="mut">推荐·近免费</span></label>
@@ -170,11 +188,12 @@ window.api = function(url, opts){
   });
 };
 window.switchPane = function(t){
-  ['write','search','projects','ask','settings'].forEach(function(x){
+  ['write','search','projects','skills','ask','settings'].forEach(function(x){
     document.getElementById('tab-' + x).classList.toggle('on', x === t);
     document.getElementById('pane-' + x).style.display = (x === t ? 'block' : 'none');
   });
   if(t === 'projects'){ loadTasks(); }
+  if(t === 'skills'){ loadSkills(); }
   if(t === 'settings'){ loadSettings(); }
 };
 window.send = function(){
@@ -469,6 +488,81 @@ window.runDigest = function(btn){
       loadTasks();
     })
     .catch(function(){ btn.disabled = false; btn.textContent = old; tkMsg('归纳失败，请重试', true); });
+};
+
+window.skillData = [];
+
+window.loadSkills = function(){
+  api('/api/skills').then(function(d){
+    window.skillData = d.cards || [];
+    renderSkills();
+  }).catch(function(){});
+};
+
+window.renderSkills = function(){
+  var el = document.getElementById('sklist');
+  if(!el){ return; }
+  var cs = window.skillData || [];
+  if(!cs.length){
+    el.innerHTML = '<div class="mut">还没有技能卡。任务「结束」后发「沉淀 技能名」就能生成一张；定时归纳每天凌晨也会把已完成的任务整理成卡（草稿在 _待审/，确认后挪进正式目录）。</div>';
+    return;
+  }
+  var html = '';
+  [['skill','技能卡'],['wiki','知识页']].forEach(function(g){
+    var arr = cs.filter(function(c){ return c.kind === g[0]; });
+    if(!arr.length){ return; }
+    html += '<div class="tk-group">' + g[1] + ' ' + arr.length + '</div>';
+    arr.forEach(function(c){
+      var meta = [];
+      if(c.steps){ meta.push(c.steps + ' 步'); }
+      if(c.checks){ meta.push('检查项 ' + c.checks); }
+      if(c.aliases && c.aliases.length){ meta.push('别名：' + c.aliases.slice(0, 4).join(' / ')); }
+      html += '<div class="sk">';
+      html += '<div class="sk-hd"><b>' + escapeHtml(c.title) + '</b><span class="tk-tag">'
+            + (c.kind === 'skill' ? '技能卡' : '知识页') + '</span></div>';
+      if(c.when){ html += '<div class="sk-when">' + escapeHtml(c.when) + '</div>'; }
+      if(meta.length){ html += '<div class="tk-meta" style="margin-top:4px">' + escapeHtml(meta.join(' · ')) + '</div>'; }
+      html += '<div class="sk-acts">';
+      if(c.kind === 'skill' && c.steps){
+        html += '<button class="pri" data-act="use" data-rel="' + escapeHtml(c.rel) + '">用它开任务</button>';
+      }
+      html += '<button data-act="open" data-rel="' + escapeHtml(c.rel) + '">看全文</button>';
+      html += '</div></div>';
+    });
+  });
+  el.innerHTML = html;
+  el.querySelectorAll('[data-act="use"]').forEach(function(b){
+    b.onclick = function(){ useSkill(this.getAttribute('data-rel'), this); };
+  });
+  el.querySelectorAll('[data-act="open"]').forEach(function(b){
+    b.onclick = function(){ openNote(this.getAttribute('data-rel')); };
+  });
+};
+
+window.useSkill = function(rel, btn){
+  var card = (window.skillData || []).filter(function(c){ return c.rel === rel; })[0];
+  if(!card){ return; }
+  var m = document.getElementById('skmsg');
+  m.style.display = 'block';
+  m.className = 'msg';
+  m.textContent = '正在把《' + card.title + '》的步骤导成任务...';
+  if(btn){ btn.disabled = true; }
+  api('/api/skill/use', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({title: card.title})})
+    .then(function(d){
+      if(btn){ btn.disabled = false; }
+      if(!d.ok){ m.className = 'msg err'; m.textContent = d.err || '导入失败'; return; }
+      if(!d.slug){ m.textContent = d.reply || '这张卡没有可执行步骤'; return; }
+      m.innerHTML = '已开任务《' + escapeHtml(d.title) + '》，共 ' + (d.steps || []).length + ' 步：<br>'
+        + (d.steps || []).map(function(s, i){ return (i + 1) + '. ' + escapeHtml(s); }).join('<br>')
+        + '<br><a href="#" class="exp" style="margin-top:6px;display:inline-block" onclick="switchPane(\'projects\');return false;">去任务页勾选 →</a>';
+      loadTasks(); loadCtx();
+    })
+    .catch(function(){
+      if(btn){ btn.disabled = false; }
+      m.className = 'msg err';
+      m.textContent = '导入失败，请重试';
+    });
 };
 
 window.loadProj = function(){
