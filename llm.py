@@ -34,8 +34,10 @@ class LLMRouter:
             content = msg.get("reasoning_content") or ""
         return content
 
-    def chat_messages(self, messages, tier="main", max_tokens=1500):
-        order = [("ds", self.main_model if tier == "main" else self.router_model)]
+    def chat_messages(self, messages, tier="main", max_tokens=1500, models=None):
+        # models: 前置的付费旗舰模型（按优先级），全部失败后回落标准链路
+        order = [("glm", m) for m in (models or [])]
+        order += [("ds", self.main_model if tier == "main" else self.router_model)]
         order += [("glm", m) for m in self.glm_models]
 
         last_err = None

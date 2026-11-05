@@ -314,5 +314,8 @@ def ask(request: Request, body: dict):
         if role in ("user", "assistant") and content:
             msgs.append({"role": role, "content": content})
     msgs.append({"role": "user", "content": q})
-    ans = llm.chat_messages(msgs, tier="main", max_tokens=1500)
+    # 增强模型白名单（付费旗舰，勾选才用；顺序即优先级）
+    PREMIUM = ("glm-5.3", "glm-5.2", "glm-5")
+    premium = [m for m in (body.get("models") or []) if m in PREMIUM]
+    ans = llm.chat_messages(msgs, tier="main", max_tokens=1500, models=premium)
     return {"reply": ans}
