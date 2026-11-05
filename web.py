@@ -12,6 +12,7 @@ import rag
 import users as users_mod
 from config import USERS, ENV, NOTES_ROOT, DATA_DIR
 from graph import build_graph, llm
+from llm import load_model_settings, save_model_settings
 
 app = FastAPI(title="NotesBot-Web")
 GRAPH = build_graph()
@@ -316,6 +317,38 @@ def ask(request: Request, body: dict):
     msgs.append({"role": "user", "content": q})
     # 增强模型白名单（付费旗舰，勾选才用；顺序即优先级）
     PREMIUM = ("glm-5.3", "glm-5.2", "glm-5.3-flash", "glm-5")
-    premium = [m for m in (body.get("models") or []) if m in PREMIUM]
+    s = load_model_settings()  # 设置页关掉的增强模型也一并拦截
+    premium = [m for m in (body.get("models") or []) if m in PREMIUM and s["premium"].get(m, True)]
     ans = llm.chat_messages(msgs, tier="main", max_tokens=1500, models=premium)
     return {"reply": ans}
+
+
+# ===== 模型开关（设置页）=====
+PREMIUM_MODELS = {  # 展示名：给前端渲染开关列表
+    "glm-5.3-flash": ("GLM-5.3-Flash", "推荐·近免费（0.4/1.4元每百万tokens 五折）"),
+    "glm-5.3": ("GLM-5.3", "旗舰（8/28元每百万tokens）"),
+    "glm-5.2": ("GLM-5.2", "旗舰（8/28元每百万tokens）"),
+    "glm-5": ("GLM-5", "上代旗舰·便宜（4/18元每百万tokens）"),
+}
+
+
+@app.get("/api/model-settings")
+def get_model_settings(request: Request):
+    require(request)
+    s = load_model_settings()
+    # premium 里没记录的模型默认开
+    premium = {k: bool(s["premium"].get(k, True)) for k in PREMIUM_MODELS}
+    return {"deepseek": s["deepseek"], "premium": premium, "models": PREMIUM_MODELS}
+
+
+@app.post("/api/model-settings")
+def set_model_settings(request: Request, body: dict):
+    u = require(request)
+    if config.load_users().get(u, {}).get("role") != "admin":
+        return JSONResponse({"ok": False, "err": "只有管理员可以修改模型设置"})
+    s = {
+        "deepseek": bool(body.get("deepseek", True)),
+        "premium": {k: bool(v) for k, v in (body.get("premium") or {}).items() if k in PREMIUM_MODELS},
+    }
+    save_model_settings(s)
+    return {"ok": True}

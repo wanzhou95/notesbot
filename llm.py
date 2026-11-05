@@ -1,5 +1,27 @@
+import json
+
 import httpx
-from config import ENV
+
+from config import ENV, DATA_DIR
+
+# 模型开关设置（设置页修改，落盘立即生效，无需重启服务）
+SETTINGS_FILE = DATA_DIR / "model_settings.json"
+
+
+def load_model_settings():
+    """读模型开关；premium 里没写的模型默认开。"""
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    return {
+        "deepseek": bool(data.get("deepseek", True)),
+        "premium": dict(data.get("premium") or {}),
+    }
+
+
+def save_model_settings(settings):
+    SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class LLMRouter:
@@ -37,8 +59,10 @@ class LLMRouter:
 
     def chat_messages(self, messages, tier="main", max_tokens=1500, models=None):
         # models: 前置的付费旗舰模型（按优先级），全部失败后回落标准链路
+        s = load_model_settings()
         order = [("glm", m) for m in (models or [])]
-        order += [("ds", self.main_model if tier == "main" else self.router_model)]
+        if s["deepseek"]:  # 设置页关掉 DeepSeek 后，付费通道直接跳过
+            order += [("ds", self.main_model if tier == "main" else self.router_model)]
         order += [("glm", m) for m in self.glm_models]
 
         last_err = None

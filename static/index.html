@@ -52,6 +52,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 <button id="tab-search" onclick="switchPane('search')">搜索</button>
 <button id="tab-projects" onclick="switchPane('projects')">项目</button>
 <button id="tab-ask" onclick="switchPane('ask')">问AI</button>
+<button id="tab-settings" onclick="switchPane('settings')">设置</button>
 </div>
 <div id="pane-write" class="pane">
   <div class="card">
@@ -76,7 +77,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 <div id="pane-ask" class="pane" style="display:none">
   <div class="card">
     <div class="mut">直接问大模型，回答任何问题（不查你的笔记库）</div>
-    <div class="row" style="flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0 0;font-size:13px">
+    <div class="row" style="flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0 0;font-size:13px" id="pmRow">
       <span class="mut">增强模型（付费，勾选本次提问使用）：</span>
       <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.3-flash"> GLM-5.3-Flash <span class="mut">推荐·近免费</span></label>
       <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.3"> GLM-5.3 <span class="mut">旗舰</span></label>
@@ -87,6 +88,26 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
     <div class="row">
       <input id="askq" class="inp" style="flex:1" placeholder="问任何问题，回车或点发送">
       <button class="btn" style="width:auto" onclick="askAi()">发送</button>
+    </div>
+  </div>
+</div>
+<div id="pane-settings" class="pane" style="display:none">
+  <div class="card">
+    <div class="mut">AI 模型开关（修改立即生效，无需重启；仅管理员可保存）</div>
+    <div style="margin:14px 0;padding:12px;border:1px solid #e5e7eb;border-radius:8px">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:bold">
+        <input type="checkbox" id="sw-deepseek"> DeepSeek（付费主力：deepseek-v4-pro）
+      </label>
+      <div class="mut" style="margin:6px 0 0 24px">关闭后所有 AI 功能改用 GLM 系列回答（智谱账号），不再消耗 DeepSeek 余额</div>
+    </div>
+    <div style="margin:14px 0;padding:12px;border:1px solid #e5e7eb;border-radius:8px">
+      <div style="font-weight:bold;margin-bottom:8px">问AI 增强模型（按次付费）</div>
+      <div id="pmSwitches"></div>
+      <div class="mut" style="margin-top:6px">关闭后问AI 页不再出现该勾选框，后端同时拦截</div>
+    </div>
+    <div class="row">
+      <button class="btn" style="width:auto" onclick="saveSettings()">保存设置</button>
+      <span id="setmsg" class="mut"></span>
     </div>
   </div>
 </div>
@@ -106,11 +127,12 @@ window.api = function(url, opts){
   });
 };
 window.switchPane = function(t){
-  ['write','search','projects','ask'].forEach(function(x){
+  ['write','search','projects','ask','settings'].forEach(function(x){
     document.getElementById('tab-' + x).classList.toggle('on', x === t);
     document.getElementById('pane-' + x).style.display = (x === t ? 'block' : 'none');
   });
   if(t === 'projects'){ loadProj(); }
+  if(t === 'settings'){ loadSettings(); }
 };
 window.send = function(){
   var t = document.getElementById('txt').value.trim();
@@ -306,6 +328,48 @@ window.escapeHtml = function(s){
   });
 };
 window.chatHistory = [];
+window.modelConf = null;
+window.loadSettings = function(){
+  api('/api/model-settings')
+    .then(function(d){
+      window.modelConf = d;
+      document.getElementById('sw-deepseek').checked = d.deepseek;
+      var box = document.getElementById('pmSwitches');
+      box.innerHTML = '';
+      Object.keys(d.models).forEach(function(k){
+        var info = d.models[k];
+        var row = document.createElement('label');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:6px 0';
+        row.innerHTML = '<input type="checkbox" class="pmsw" data-m="' + k + '"' + (d.premium[k] ? ' checked' : '') + '> ' + info[0] + ' <span class="mut">' + info[1] + '</span>';
+        box.appendChild(row);
+      });
+      renderPmRow();
+    });
+};
+function renderPmRow(){
+  if(!window.modelConf){ return; }
+  document.querySelectorAll('#pmRow .pm').forEach(function(c){
+    var lbl = c.parentElement;
+    lbl.style.display = window.modelConf.premium[c.value] ? 'flex' : 'none';
+  });
+}
+window.saveSettings = function(){
+  var premium = {};
+  document.querySelectorAll('#pmSwitches .pmsw').forEach(function(c){ premium[c.dataset.m] = c.checked; });
+  api('/api/model-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deepseek: document.getElementById('sw-deepseek').checked, premium: premium})})
+    .then(function(d){
+      if(d.ok){
+        document.getElementById('setmsg').textContent = '已保存，立即生效 ✓';
+        if(window.modelConf){
+          window.modelConf.deepseek = document.getElementById('sw-deepseek').checked;
+          Object.keys(premium).forEach(function(k){ window.modelConf.premium[k] = premium[k]; });
+          renderPmRow();
+        }
+      } else {
+        document.getElementById('setmsg').textContent = d.err || '保存失败';
+      }
+    });
+};
 window.askAi = function(){
   var q = document.getElementById('askq').value.trim();
   if(!q){ return; }
@@ -334,7 +398,7 @@ window.askAi = function(){
     });
 };
 window.onload = function(){
-  loadRecent(); loadProj(); loadCtx();
+  loadRecent(); loadProj(); loadCtx(); loadSettings();
   document.getElementById('file').addEventListener('change', onfile);
   document.getElementById('askq').addEventListener('keydown', function(e){
     if(e.key === 'Enter'){ askAi(); }
