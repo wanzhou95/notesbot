@@ -10,3 +10,9 @@ markdown
 python-docx
 weasyprint
 sqlite-vec
+# 文件上传（视频/音频 multipart 流式落盘）
+python-multipart
+# 视频字幕：B 站走官方 API，其它平台走 yt-dlp；
+# 没有系统 ffmpeg 时用 imageio-ffmpeg 自带的静态二进制切片
+yt-dlp
+imageio-ffmpeg

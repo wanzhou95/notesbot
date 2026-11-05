@@ -1,9 +1,10 @@
 import os
 import secrets
+import shutil
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
 import config
@@ -459,6 +460,77 @@ def ctx(request: Request):
         t = tasks.read_task(u, active)
         name = t["name"] if t else active
     return {"active": name, "slug": active}
+
+
+@app.get("/api/videos")
+def api_videos(request: Request):
+    """已生成的视频速览（这些笔记不进向量检索）。"""
+    u = require(request)
+    import video
+    return {"list": video.list_notes(u), "dir": video.VIDEO_DIR,
+            "max_minutes": video.MAX_MINUTES}
+
+
+@app.post("/api/video/url")
+def api_video_url(request: Request, body: dict):
+    u = require(request)
+    import video
+    url = (body.get("url") or "").strip()
+    if not video.is_url(url):
+        raise HTTPException(400, "请粘贴完整的视频链接（http/https 开头）")
+    if not video.ffmpeg_exe():
+        raise HTTPException(500, "服务器缺少 ffmpeg，无法转写")
+    old = video.find_by_source(u, url)
+    if old:
+        return {"ok": True, "done": True, "note": old["rel"], "title": old["title"],
+                "msg": "这个链接已经总结过了"}
+    jid = video.start_job(u, url=url)
+    return {"ok": True, "id": jid}
+
+
+VIDEO_MAX_BYTES = 2 * 1024 * 1024 * 1024      # 2GB
+
+
+@app.post("/api/video/upload")
+def api_video_upload(request: Request, file: UploadFile = File(...)):
+    """本地视频/音频上传：流式落盘（不走 base64，大文件才扛得住）。"""
+    u = require(request)
+    import video
+    name = os.path.basename(file.filename or "video.mp4")
+    if not video.is_media(name):
+        raise HTTPException(400, "只支持视频/音频文件（mp4/mkv/mov/flv/webm/mp3/m4a/wav…）")
+    jid = video.create_job(u, name)
+    work = video.job_workdir(jid)
+    work.mkdir(parents=True, exist_ok=True)
+    dst = work / ("src." + video.media_ext(name))
+    total = 0
+    try:
+        with open(dst, "wb") as out:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > VIDEO_MAX_BYTES:
+                    raise HTTPException(413, "文件超过 2GB，先压缩一下再传")
+                out.write(chunk)
+        if total < 1024:
+            raise HTTPException(400, "文件是空的")
+    except HTTPException:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    video.launch(jid, file_path=dst)
+    return {"ok": True, "id": jid, "size": total}
+
+
+@app.get("/api/video/status")
+def api_video_status(request: Request, id: str = ""):
+    require(request)
+    import video
+    j = video.get_job(id)
+    if not j:
+        raise HTTPException(404, "任务不存在或已过期（服务重启过？）")
+    return j
 
 
 @app.post("/api/ask")

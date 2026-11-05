@@ -46,7 +46,9 @@ SKILL_DIR = "05-Skills"
 WIKI_DIR = "06-Wiki"
 DRAFT_DIR = "_待审"
 
-SKIP_DIRS = {".git", "_index", "_assets", ".stversions", ".obsidian", ".trash"}
+SKIP_DIRS = {".git", "_index", "_assets", ".stversions", ".obsidian", ".trash",
+             # 视频字幕是「给人看的材料」，不做归纳素材（避免把别人的话当自己的经验）
+             ENV.get("VIDEO_DIR", "03-Resources/视频字幕").strip("/").split("/")[-1]}
 
 SKILL_PROMPT = """你是个人知识库的整理助手。把下面这份项目记录提炼成一张「技能卡」。
 

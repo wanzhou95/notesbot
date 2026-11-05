@@ -398,6 +398,64 @@ Bot：按技能卡《关键帧操作》开了任务（共 4 步，已设为当�
 
 ---
 
+## 视频 → 字幕 → 速览（不进检索）
+
+给一个视频链接或丢一个视频文件，得到一份「一句话总结 + 章节 + 要点 + 完整字幕」，
+**只给你看，不进向量库**（字幕动辄上万字，embed 又贵又把检索结果冲淡）。
+
+```
+B 站链接 ──→ 官方 API 取标题/时长 ──┬─ 有平台字幕 → 直接拉（0 成本）
+                                    └─ 没字幕 → 下 DASH 音频 → 切 28 秒段 → GLM-ASR
+其它链接 ──→ yt-dlp ──→ 同上
+本地文件 ──→ 直接切片 → GLM-ASR
+                ↓
+        03-Resources/视频字幕/<标题>.md（速览在上，完整字幕在下）
+```
+
+### 为什么 B 站不用 yt-dlp
+
+**机房 IP 抓 B 站网页会被风控直接返回 412 Precondition Failed**，换浏览器 UA、
+加 Referer、带 buvid3 cookie 都救不了（实测）。能走通的是官方接口：
+
+| 接口 | 用途 |
+|---|---|
+| `api.bilibili.com/x/web-interface/view` | 标题、时长、分P、CID |
+| `api.bilibili.com/x/player/v2` | 字幕列表（多数视频匿名看不到，配 `BILI_COOKIE` 才行） |
+| `api.bilibili.com/x/player/playurl`（`fnval=16`） | DASH 音频流（挑码率最低那条，够 ASR 用） |
+
+CDN（`*.bilivideo.cn`）下载正常，所以「下音频 → 转写」这条路是稳的。
+
+### 命令与入口
+
+```
+总结 <视频链接>    开始处理（粘贴 B 站/抖音链接也行，视频站链接会直接触发）
+视频列表           看已生成的速览
+看视频 <标题关键词> 看章节与要点（完整字幕在网页）
+```
+
+网页「视频」页：粘链接或**上传本地视频**（单文件 ≤ 2GB，流式落盘不进 base64），
+进度条实时显示「转写中 12/48 段」，完成后卡片里直接看章节、要点，点「完整字幕」看原文。
+
+### 成本与限制
+
+- 平台自带字幕：0 成本；没有字幕才走 ASR，**约 0.015 元/分钟**（1 小时视频约 0.9 元）。
+- GLM-ASR 单次上限 **30 秒 / 25MB**，所以按 28 秒切片，上一段结果当 `prompt` 回传，
+  人名术语不会每段重猜。
+- 默认单个视频上限 180 分钟（`VIDEO_MAX_MIN`），超了直接拒，防手滑。
+- 同一链接第二次提交不会重复花钱（按 frontmatter 的 `source` 去重）。
+- 抖音等平台经常要登录态：把浏览器导出的 `cookies.txt` 填到 `YTDLP_COOKIES` 再用。
+
+### 依赖
+
+```bash
+pip install yt-dlp imageio-ffmpeg python-multipart
+```
+
+`imageio-ffmpeg` 自带静态 ffmpeg 二进制，服务器没装 ffmpeg 也能切片（代码里优先用系统 ffmpeg）。
+国内服务器装依赖建议加镜像：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple ...`
+
+---
+
 ## 三个入口怎么接
 
 ### 网页端（默认可用）

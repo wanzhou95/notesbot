@@ -30,8 +30,8 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .msg{padding:10px 12px;border-radius:10px;margin-top:10px;font-size:14px;white-space:pre-wrap;background:#f0fdf4;border:1px solid #bbf7d0}
 .msg.err{background:#fef2f2;border-color:#fecaca}
 .proj{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--card)}
-.tabs{display:flex;gap:4px;margin-bottom:12px}
-.tabs button{flex:1;border:1px solid var(--line);background:var(--card);border-radius:8px;padding:8px;font-size:14px;cursor:pointer}
+.tabs{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+.tabs button{flex:1 1 auto;min-width:64px;border:1px solid var(--line);background:var(--card);border-radius:8px;padding:8px 4px;font-size:14px;cursor:pointer}
 .tabs button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 .ver{font-size:11px;color:#9ca3af;margin-left:8px}
 .exp{color:var(--acc);font-size:13px;text-decoration:none;margin-right:10px}
@@ -72,6 +72,14 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .sk-acts{display:flex;gap:6px;justify-content:flex-end;margin-top:8px}
 .sk-acts button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:4px 12px;font-size:12px;cursor:pointer;color:var(--acc)}
 .sk-acts button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}
+.vt-secs{margin-top:8px;border-top:1px dashed var(--line);padding-top:6px}
+.vt-sec{font-size:12.5px;color:var(--tx);line-height:1.6;padding:2px 0;display:flex;gap:8px}
+.vt-t{color:var(--acc);font-variant-numeric:tabular-nums;flex:none}
+.vt-pts{margin-top:6px;font-size:13px}
+.vt-pts summary{cursor:pointer;color:var(--acc);font-size:12px}
+.vt-pts ul{margin:6px 0 0;padding-left:18px;color:var(--tx);line-height:1.7}
+.vidbar{height:4px;border-radius:2px;background:var(--line);overflow:hidden;margin-top:8px}
+.vidbar i{display:block;height:100%;background:var(--acc);transition:width .3s}
 </style>
 </head>
 <body>
@@ -82,6 +90,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 <button id="tab-search" onclick="switchPane('search')">搜索</button>
 <button id="tab-projects" onclick="switchPane('projects')">任务</button>
 <button id="tab-skills" onclick="switchPane('skills')">技能</button>
+<button id="tab-video" onclick="switchPane('video')">视频</button>
 <button id="tab-ask" onclick="switchPane('ask')">问AI</button>
 <button id="tab-settings" onclick="switchPane('settings')">设置</button>
 </div>
@@ -134,6 +143,25 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
     <div id="skmsg" class="msg" style="display:none"></div>
   </div>
   <div class="card"><div id="sklist"></div></div>
+</div>
+<div id="pane-video" class="pane" style="display:none">
+  <div class="card">
+    <div class="mut">粘视频链接（B站/抖音…）或上传本地文件。只取字幕做速览，<b>不进检索</b>。</div>
+    <div class="row" style="margin-top:8px">
+      <input id="vidurl" class="inp" style="flex:1" placeholder="https://www.bilibili.com/video/BV..." onkeydown="if(event.key==='Enter')videoFromUrl()">
+      <button class="btn" style="width:auto" onclick="videoFromUrl()">解析</button>
+    </div>
+    <div class="row" style="margin-top:8px;align-items:center">
+      <button class="btn ghost" style="width:auto" onclick="pickVideo()">📹 上传本地视频</button>
+      <span class="mut" id="vidhint">单文件 ≤ 2GB</span>
+    </div>
+    <input type="file" id="vidfile" accept="video/*,audio/*,.mkv,.flv,.ts,.m4v" style="display:none">
+    <div id="vidjob" class="msg" style="display:none"></div>
+  </div>
+  <div class="card">
+    <div class="mut">已生成的视频速览（点开可看章节、要点和完整字幕）</div>
+    <div id="vidlist"></div>
+  </div>
 </div>
 <div id="pane-ask" class="pane" style="display:none">
   <div class="card">
@@ -194,6 +222,7 @@ window.switchPane = function(t){
   });
   if(t === 'projects'){ loadTasks(); }
   if(t === 'skills'){ loadSkills(); }
+  if(t === 'video'){ loadVideos(); }
   if(t === 'settings'){ loadSettings(); }
 };
 window.send = function(){
@@ -565,6 +594,134 @@ window.useSkill = function(rel, btn){
     });
 };
 
+/* ---------- 视频速览 ---------- */
+window.vidPoll = null;
+window.vidItems = [];
+
+window.vidMsg = function(text, isErr, pct){
+  var m = document.getElementById('vidjob');
+  if(!m){ return; }
+  m.style.display = 'block';
+  m.className = 'msg' + (isErr ? ' err' : '');
+  m.innerHTML = escapeHtml(text).replace(/\n/g, '<br>')
+    + (typeof pct === 'number' ? '<div class="vidbar"><i style="width:' + pct + '%"></i></div>' : '');
+};
+
+window.videoFromUrl = function(){
+  var el = document.getElementById('vidurl');
+  var url = (el.value || '').trim();
+  if(!url){ return; }
+  vidMsg('正在解析链接…');
+  api('/api/video/url', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url: url})})
+    .then(function(d){
+      if(d.ok === false || d.detail){ vidMsg(d.detail || d.err || '解析失败', true); return; }
+      if(d.done){ vidMsg('这个链接已经总结过了：《' + d.title + '》，下面列表里能看到。'); loadVideos(); return; }
+      el.value = '';
+      watchVideo(d.id);
+    })
+    .catch(function(){ vidMsg('解析失败，请重试', true); });
+};
+
+window.pickVideo = function(){ document.getElementById('vidfile').click(); };
+
+window.onVideoFile = function(){
+  var input = document.getElementById('vidfile');
+  var f = input.files && input.files[0];
+  input.value = '';
+  if(!f){ return; }
+  if(f.size > 2 * 1024 * 1024 * 1024){ alert('超过 2GB，先压缩一下再传'); return; }
+  vidMsg('上传中 0%', false, 0);
+  var fd = new FormData();
+  fd.append('file', f);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/video/upload');
+  xhr.upload.onprogress = function(e){
+    if(e.lengthComputable){
+      var pct = Math.round(e.loaded / e.total * 100);
+      vidMsg('上传中 ' + pct + '%（' + (e.loaded / 1048576).toFixed(0) + ' / '
+             + (e.total / 1048576).toFixed(0) + ' MB）', false, pct);
+    }
+  };
+  xhr.onload = function(){
+    if(xhr.status === 401){ location.href = '/'; return; }
+    var d = {};
+    try{ d = JSON.parse(xhr.responseText); }catch(e){}
+    if(!d.id){ vidMsg(d.detail || d.err || '上传失败', true); return; }
+    watchVideo(d.id);
+  };
+  xhr.onerror = function(){ vidMsg('上传失败，请重试', true); };
+  xhr.send(fd);
+};
+
+window.watchVideo = function(id){
+  if(window.vidPoll){ clearInterval(window.vidPoll); window.vidPoll = null; }
+  var t0 = Date.now();
+  var tick = function(){
+    api('/api/video/status?id=' + encodeURIComponent(id)).then(function(d){
+      if(d.err){
+        clearInterval(window.vidPoll); window.vidPoll = null;
+        vidMsg('处理失败：' + d.err, true);
+        return;
+      }
+      if(d.done){
+        clearInterval(window.vidPoll); window.vidPoll = null;
+        vidMsg('《' + (d.title || '') + '》做好了（' + (d.method || '') + '，用了 '
+               + (d.elapsed || 0) + ' 秒）\n已存到 ' + d.note + '\n下面列表里看速览，点「完整字幕」看原文。');
+        loadVideos();
+        return;
+      }
+      var pct = d.total ? Math.round(d.step / d.total * 100) : 0;
+      vidMsg(d.stage + (d.total ? '（' + d.step + '/' + d.total + ' 段）' : '')
+             + '　已用 ' + Math.round((Date.now() - t0) / 1000) + ' 秒', false, pct);
+    }).catch(function(){});
+  };
+  tick();
+  window.vidPoll = setInterval(tick, 2500);
+};
+
+window.loadVideos = function(){
+  api('/api/videos').then(function(d){
+    window.vidItems = d.list || [];
+    renderVideos();
+  }).catch(function(){});
+};
+
+window.renderVideos = function(){
+  var el = document.getElementById('vidlist');
+  if(!el){ return; }
+  var arr = window.vidItems || [];
+  if(!arr.length){
+    el.innerHTML = '<div class="mut">还没有视频速览。粘个链接或传个文件试试，短视频几十秒就好。</div>';
+    return;
+  }
+  el.innerHTML = arr.map(function(v){
+    var secs = (v.sections || []);
+    var secHtml = secs.slice(0, 6).map(function(s){
+      return '<div class="vt-sec"><span class="vt-t">' + escapeHtml(s.t) + '</span><span>'
+             + escapeHtml(s.text) + '</span></div>';
+    }).join('');
+    if(secs.length > 6){ secHtml += '<div class="mut">…还有 ' + (secs.length - 6) + ' 个章节，看完整字幕</div>'; }
+    var pts = (v.points || []).map(function(p){ return '<li>' + escapeHtml(p) + '</li>'; }).join('');
+    return '<div class="sk">'
+      + '<div class="sk-hd"><b>' + escapeHtml(v.title) + '</b><span class="tk-tag">'
+      + escapeHtml(v.duration || '-') + '</span></div>'
+      + (v.gist ? '<div class="sk-when">' + escapeHtml(v.gist) + '</div>' : '')
+      + '<div class="tk-meta" style="margin-top:4px">' + escapeHtml(v.method || '') + ' · '
+      + escapeHtml(v.created || '') + '</div>'
+      + (secHtml ? '<div class="vt-secs">' + secHtml + '</div>' : '')
+      + (pts ? '<details class="vt-pts"><summary>要点 ' + (v.points || []).length + ' 条</summary><ul>'
+               + pts + '</ul></details>' : '')
+      + '<div class="sk-acts">'
+      + (v.source ? '<a class="exp" href="' + escapeHtml(v.source) + '" target="_blank" rel="noopener">原视频</a>' : '')
+      + '<button data-act="open" data-rel="' + escapeHtml(v.rel) + '">完整字幕</button></div>'
+      + '</div>';
+  }).join('');
+  el.querySelectorAll('[data-act="open"]').forEach(function(b){
+    b.onclick = function(){ openNote(this.getAttribute('data-rel')); };
+  });
+};
+
 window.loadProj = function(){
   api('/api/projects').then(function(d){
     var el = document.getElementById('proj');
@@ -693,6 +850,7 @@ window.askAi = function(){
 window.onload = function(){
   loadRecent(); loadTasks(); loadCtx(); loadSettings();
   document.getElementById('file').addEventListener('change', onfile);
+  document.getElementById('vidfile').addEventListener('change', onVideoFile);
   document.getElementById('askq').addEventListener('keydown', function(e){
     if(e.key === 'Enter'){ askAi(); }
   });

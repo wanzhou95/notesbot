@@ -1,6 +1,6 @@
 import re
 
-from config import user_dir, DATA_DIR
+from config import user_dir, DATA_DIR, ENV
 from embedding import Embedder
 from vector_store import VectorStore
 
@@ -56,6 +56,13 @@ def chunk_text(text, size=800):
 SKIP_NAMES = {"_project.md", "欢迎.md", "00-任务总览.md"}
 MIN_CHUNK = 4
 
+# 不索引的目录名。视频字幕动辄上万字，进向量库又贵又把检索结果冲淡，
+# 所以整目录排除（仍可用关键词兜底检索，只是不花 embedding 的钱）。
+_VIDEO_DIR_NAME = ENV.get("VIDEO_DIR", "03-Resources/视频字幕").strip("/").split("/")[-1]
+_EXTRA_SKIP = {x.strip() for x in ENV.get("RAG_SKIP_DIRS", "").replace("，", ",").split(",") if x.strip()}
+SKIP_DIR_NAMES = {".git", "_index", ".stversions", ".obsidian", ".trash",
+                  _VIDEO_DIR_NAME} | _EXTRA_SKIP
+
 
 def _aliases(text):
     """提取 frontmatter 里的 aliases / 别名，用于增强检索命中（搜「补间」命中「关键帧」）。"""
@@ -78,7 +85,7 @@ def skip_file(rel_path):
     name = parts[-1]
     if name in SKIP_NAMES:
         return True
-    if any(p in (".git", "_index", ".stversions", ".obsidian", ".trash") for p in parts):
+    if any(p in SKIP_DIR_NAMES for p in parts):
         return True
     # 以 _ 开头的目录（_assets / _待审 等）一律不索引
     return any(p.startswith("_") for p in parts[:-1])

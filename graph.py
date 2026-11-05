@@ -8,6 +8,7 @@ import storage
 import tasks
 import rag
 import skills
+import video
 from llm import LLMRouter
 
 llm = LLMRouter()
@@ -22,6 +23,11 @@ CMD_PATTERNS = [
     ("setparent", re.compile(r"^\s*(上级|父任务)\s*[:：]?\s*(.+)$")),
     ("skillmake", re.compile(r"^\s*(沉淀|存为技能|做成技能|整理成技能)\s*[:：]?\s*(.*)$")),
     ("skilllist", re.compile(r"^\s*(技能列表|有哪些技能|技能清单|技能卡)\s*$")),
+    # 视频字幕：带动词的链接、裸的视频站链接、以及列表/查看
+    ("videolist", re.compile(r"^\s*(视频列表|字幕列表|有哪些视频|视频笔记)\s*$")),
+    ("videomake", re.compile(r"^\s*(?:总结|转写|提取字幕|看下|看看)\s*(?P<url>https?://\S+)\s*$")),
+    ("videomake", re.compile(r"^\s*(?P<arg>https?://\S+)\s*$")),
+    ("videoshow", re.compile(r"^\s*(?:看视频|视频笔记|视频)\s*[:：]?\s*(?!https?://)(?P<arg>.+)$")),
     # 「用 X / 按 X 做 / 技能 X」——只有 X 能对上技能卡时才算命令（见 node_classify 的二次校验）
     ("skilluse", re.compile(r"^\s*(?:用|按|照着?|跟着?|调用|技能)\s*[《「]?(?P<arg>.+?)[》」]?\s*(?:来做|来走|做|走)?\s*$")),
     ("skilluse", re.compile(r"^\s*(?:怎么做|如何做|怎么弄)\s*[《「]?(?P<arg>.+?)[》」]?\s*$")),
@@ -75,8 +81,10 @@ def _split_names(arg):
 
 
 def _pattern_arg(m):
-    """取匹配到的参数：新命令用命名组 arg，老命令用第 2 组。"""
+    """取匹配到的参数：新命令用命名组，老命令用第 2 组。"""
     d = m.groupdict()
+    if d.get("url"):
+        return d["url"].strip()
     if "arg" in d:
         return (d["arg"] or "").strip()
     return (m.group(2) if m.lastindex and m.lastindex >= 2 else "").strip()
@@ -92,6 +100,9 @@ def node_classify(state: S) -> S:
         # 「用 剪映导出素材」「用关键帧做过场」这类记录句不能当命令：
         # 只有整句就是卡名/别名时才执行（半句话交给问 AI 那条路，照样能答）
         if cmd == "skilluse" and not skills.exact_card(state["user"], arg):
+            continue
+        # 裸链接只有落在视频站上才当视频处理；其它链接照旧存成笔记/资源
+        if cmd == "videomake" and not m.groupdict().get("url") and not video.is_video_url(arg):
             continue
         return {**state, "intent": "cmd", "cmd": cmd, "arg": arg}
 
@@ -314,6 +325,59 @@ def node_command(state: S) -> S:
         if card["checks"]:
             lines.append("检查项 %d 条，收尾时对着核一遍（见 %s）。" % (len(card["checks"]), card["rel"]))
         return {**state, "reply": "\n".join(lines)}
+
+    if cmd == "videolist":
+        items = video.list_notes(user, 30)
+        if not items:
+            return {**state, "reply": "还没有视频速览。发一个 B 站链接给我（或网页「视频」页上传文件），"
+                                      "我会把字幕取下来做一份速览，存在 %s/。" % video.VIDEO_DIR}
+        lines = ["视频速览 %d 条（在 %s/，不进检索）：" % (len(items), video.VIDEO_DIR)]
+        for it in items[:10]:
+            bit = "（%s ｜ %s）" % (it["duration"] or "-", it["method"] or "-")
+            gist = ("｜" + it["gist"][:38]) if it["gist"] else ""
+            lines.append("• %s%s%s" % (it["title"], bit, gist))
+        lines.append("发「看视频 标题关键词」看章节与要点；完整字幕在网页「视频」页。")
+        return {**state, "reply": "\n".join(lines)}
+
+    if cmd == "videoshow":
+        items = video.list_notes(user, 200)
+        q = arg.strip()
+        hit = [x for x in items if q and q in x["title"]] or \
+              [x for x in items if q and q in (x["gist"] or "")]
+        if not hit:
+            return {**state, "reply": "没找到视频笔记「%s」。发「视频列表」看看有哪些。" % q}
+        it = hit[0]
+        lines = ["《%s》（%s ｜ %s ｜ %s）" % (it["title"], it["duration"] or "-",
+                                          it["method"] or "-", it["created"] or "-"), ""]
+        if it["gist"]:
+            lines += ["一句话：" + it["gist"], ""]
+        if it["sections"]:
+            lines.append("章节：")
+            lines += ["• [%s] %s" % (s["t"], s["text"]) for s in it["sections"][:12]]
+            lines.append("")
+        if it["points"]:
+            lines.append("要点：")
+            lines += ["• " + p for p in it["points"][:8]]
+            lines.append("")
+        lines.append("完整字幕：%s（网页「视频」页可看全文）" % it["rel"])
+        return {**state, "reply": "\n".join(lines)}
+
+    if cmd == "videomake":
+        url = arg
+        if not video.ffmpeg_exe():
+            return {**state, "reply": "服务器没装 ffmpeg，转写跑不起来（装一下 imageio-ffmpeg 就好）。"}
+        if not video.is_url(url):
+            return {**state, "reply": "给我一个完整的视频链接（http/https 开头）。"}
+        old = video.find_by_source(user, url)
+        if old:
+            return {**state, "reply": "这个链接已经总结过了：《%s》（%s）。\n发「看视频 %s」看要点和章节。"
+                                      % (old["title"], old["duration"], old["title"])}
+        video.start_job(user, url=url)
+        return {**state, "reply": (
+            "已开始处理这个视频。\n"
+            "先看平台有没有现成字幕（有就 0 成本）；没有就下音频、切段转写（约 0.015 元/分钟）。\n"
+            "跑完存到 %s/，**不进检索**，不会冲淡搜索。\n"
+            "之后发「视频列表」看结果，或开网页「视频」页看章节和完整字幕。" % video.VIDEO_DIR)}
 
     if cmd == "note":
         cat, path, card = _write_note(user, arg)
