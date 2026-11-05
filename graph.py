@@ -89,8 +89,9 @@ def node_classify(state: S) -> S:
         if not m:
             continue
         arg = _pattern_arg(m)
-        # 「用 剪映导出素材」这种普通记录句不能当命令：只有真能对上技能卡才执行
-        if cmd == "skilluse" and not skills.find_card(state["user"], arg):
+        # 「用 剪映导出素材」「用关键帧做过场」这类记录句不能当命令：
+        # 只有整句就是卡名/别名时才执行（半句话交给问 AI 那条路，照样能答）
+        if cmd == "skilluse" and not skills.exact_card(state["user"], arg):
             continue
         return {**state, "intent": "cmd", "cmd": cmd, "arg": arg}
 

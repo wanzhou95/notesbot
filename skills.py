@@ -177,6 +177,23 @@ def list_cards(user, include_draft=False):
     return out
 
 
+def exact_card(user, query):
+    """只认「整个名字就是卡名或别名」——命令判定用。
+
+    为什么要这么死板：「用关键帧做过场」是记录句，不是命令。
+    模糊匹配留给 related()/问 AI 那条路，它们本来就处理得了半句话。
+    """
+    q = _norm(query)
+    if not q:
+        return None
+    for c in list_cards(user):
+        names = {_norm(c["title"]), _norm(c["stem"])}
+        names |= {_norm(a) for a in c["aliases"]}
+        if q in names:
+            return c
+    return None
+
+
 def find_card(user, query):
     """按名字/别名找卡：精确 > 别名 > 互相包含。找不到返回 None。"""
     q = (query or "").strip().strip("《》「」\"'")
