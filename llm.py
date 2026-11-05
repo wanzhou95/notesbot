@@ -14,11 +14,12 @@ class LLMRouter:
         self.main_model = ENV.get("MODEL_MAIN", "deepseek-v4-pro")
         self.glm_models = [m.strip() for m in ENV.get("MODEL_FALLBACK", "glm-4.7-flash").split(",") if m.strip()]
         self.disable_thinking = ENV.get("GLM_DISABLE_THINKING", "1") == "1"
+        self.always_think = {"glm-5.3-flash"}  # 始终思考模型，不支持关闭，传了直接 400
         self.client = httpx.Client(timeout=120)
 
     def _call(self, base, key, model, messages, max_tokens, glm=False):
         body = {"model": model, "messages": messages, "max_tokens": max_tokens}
-        if glm and self.disable_thinking:
+        if glm and self.disable_thinking and model not in self.always_think:
             body["thinking"] = {"type": "disabled"}
         r = self.client.post(
             base + "/chat/completions",
