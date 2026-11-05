@@ -42,6 +42,29 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .upitem .acts button:disabled{opacity:.5;cursor:default}
 .upitem .res{margin-top:6px;font-size:13px;color:var(--mut);white-space:pre-wrap;border-top:1px dashed var(--line);padding-top:6px}
 .thumb{max-width:72px;max-height:72px;border-radius:6px;float:right;margin-left:8px}
+.tk-chip{display:inline-block;padding:4px 10px;border-radius:20px;font-size:12px;background:#f3f4f6;color:var(--mut);cursor:pointer;margin-right:6px;border:1px solid transparent}
+.tk-chip.on{background:#eef2ff;color:var(--acc);font-weight:600;border-color:#c7d2fe}
+.tk-group{font-size:12px;color:var(--mut);font-weight:600;margin:16px 0 8px 2px}
+.tk-group:first-child{margin-top:0}
+.tk{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--card)}
+.tk-row{display:flex;align-items:center;gap:9px;cursor:pointer;flex-wrap:wrap}
+.tk-dot{width:13px;height:13px;border-radius:50%;flex:none;border:1.5px solid #9ca3af;box-sizing:border-box}
+.tk-dot.doing{border:3.5px solid var(--acc)}
+.tk-dot.done{background:#16a34a;border-color:#16a34a}
+.tk-name{font-size:14px;font-weight:600;color:var(--tx)}
+.tk-name.done{color:#9ca3af;text-decoration:line-through;font-weight:400}
+.tk-meta{font-size:11px;color:var(--mut)}
+.tk-bar{width:52px;height:4px;border-radius:2px;background:var(--line);overflow:hidden;flex:none}
+.tk-bar i{display:block;height:100%;background:var(--acc)}
+.tk-tag{font-size:11px;padding:2px 7px;border-radius:4px;border:1px solid var(--line);color:var(--mut)}
+.tk-acts{display:flex;gap:6px;margin-left:auto}
+.tk-acts button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:3px 10px;font-size:12px;cursor:pointer;color:var(--acc)}
+.tk-inds{font-size:11px;color:var(--mut);padding:4px 0 0 22px}
+.tk-steps{margin-top:8px;padding:8px 0 0 22px;border-top:1px dashed var(--line)}
+.tk-step{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:13px;line-height:1.5}
+.tk-box{width:15px;height:15px;border-radius:4px;border:1.5px solid #9ca3af;flex:none;cursor:pointer;margin-top:1px;box-sizing:border-box;position:relative}
+.tk-box.on{background:var(--acc);border-color:var(--acc)}
+.tk-box.on::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
 </style>
 </head>
 <body>
@@ -50,7 +73,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
 <button id="tab-search" onclick="switchPane('search')">搜索</button>
-<button id="tab-projects" onclick="switchPane('projects')">项目</button>
+<button id="tab-projects" onclick="switchPane('projects')">任务</button>
 <button id="tab-ask" onclick="switchPane('ask')">问AI</button>
 <button id="tab-settings" onclick="switchPane('settings')">设置</button>
 </div>
@@ -72,7 +95,27 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
   <div class="card"><input id="q" class="inp" placeholder="搜索自己的笔记（语义+关键词）"><div class="row" style="margin-top:8px"><button class="btn" onclick="search()">搜索</button><button class="btn ghost" onclick="reindex(this)">重建索引</button></div><div id="sres"></div></div>
 </div>
 <div id="pane-projects" class="pane" style="display:none">
-  <div class="card"><div class="mut">项目列表</div><div id="projmsg" style="display:none"></div><div id="proj"></div></div>
+  <div class="card">
+    <div class="row" style="gap:8px">
+      <input id="tknew" class="inp" style="flex:1" placeholder="想做点什么？输入任务名，回车登记待办" onkeydown="if(event.key==='Enter')newTask()">
+      <button class="btn" style="width:auto" onclick="newTask()">登记</button>
+    </div>
+    <div class="row" style="gap:8px;margin-top:10px;align-items:center">
+      <button class="btn ghost" style="width:auto" onclick="loadTasks()">刷新</button>
+      <button class="btn ghost" style="width:auto" onclick="runDigest(this)">立即归纳</button>
+      <span id="tkstat" class="mut"></span>
+    </div>
+    <div id="tkmsg" style="display:none" class="msg"></div>
+  </div>
+  <div class="card">
+    <div style="margin-bottom:12px">
+      <span class="tk-chip on" id="chip-all" onclick="setFilter('all')">全部</span>
+      <span class="tk-chip" id="chip-doing" onclick="setFilter('doing')">进行中</span>
+      <span class="tk-chip" id="chip-todo" onclick="setFilter('todo')">待办</span>
+      <span class="tk-chip" id="chip-done" onclick="setFilter('done')">已完成</span>
+    </div>
+    <div id="tklist"></div>
+  </div>
 </div>
 <div id="pane-ask" class="pane" style="display:none">
   <div class="card">
@@ -131,7 +174,7 @@ window.switchPane = function(t){
     document.getElementById('tab-' + x).classList.toggle('on', x === t);
     document.getElementById('pane-' + x).style.display = (x === t ? 'block' : 'none');
   });
-  if(t === 'projects'){ loadProj(); }
+  if(t === 'projects'){ loadTasks(); }
   if(t === 'settings'){ loadSettings(); }
 };
 window.send = function(){
@@ -146,7 +189,7 @@ window.send = function(){
     .then(function(d){
       o.textContent = d.reply;
       o.className = 'msg' + (d.error ? ' err' : '');
-      loadRecent(); loadProj(); loadCtx();
+      loadRecent(); loadTasks(); loadCtx();
     });
 };
 window.search = function(){
@@ -272,6 +315,162 @@ window.loadRecent = function(){
     }).join('') || '<div class="mut">暂无笔记</div>';
   });
 };
+window.tasksData = null;
+window.tkOpen = {};
+window.tkFilter = 'all';
+
+window.tkLabel = function(k){
+  return { todo: '待办', doing: '进行中', done: '已完成' }[k] || k;
+};
+
+window.setFilter = function(f){
+  window.tkFilter = f;
+  ['all', 'doing', 'todo', 'done'].forEach(function(k){
+    var el = document.getElementById('chip-' + k);
+    if(el){ el.classList.toggle('on', k === f); }
+  });
+  renderTasks();
+};
+
+window.loadTasks = function(){
+  api('/api/tasks').then(function(d){
+    window.tasksData = d;
+    renderTasks();
+  }).catch(function(){});
+};
+
+window.taskNode = function(t, depth){
+  depth = depth || 0;
+  var open = !!window.tkOpen[t.slug];
+  var barW = t.total ? Math.round(t.done / t.total * 100) : 0;
+  var meta;
+  if(t.status === 'done'){ meta = t.version ? ('攻略 v' + t.version) : '已完成'; }
+  else if(t.total){ meta = t.done + '/' + t.total + ' 步'; }
+  else { meta = t.status === 'todo' ? '还没开始' : '进行中'; }
+
+  var h = '<div class="tk" style="margin-left:' + (depth * 16) + 'px">';
+  h += '<div class="tk-row" onclick="toggleTask(\'' + t.slug + '\')">';
+  h += '<span class="tk-dot ' + t.status + '"></span>';
+  h += '<span class="tk-name ' + t.status + '">' + escapeHtml(t.name) + '</span>';
+  if(t.total && t.status !== 'done'){
+    h += '<span class="tk-bar"><i style="width:' + barW + '%"></i></span>';
+  }
+  h += '<span class="tk-meta">' + meta + '</span>';
+  h += '<span class="tk-acts" onclick="event.stopPropagation()">';
+  if(t.status === 'todo'){ h += '<button onclick="setTaskStatus(\'' + t.slug + '\',\'doing\')">开始</button>'; }
+  else if(t.status === 'doing'){ h += '<button onclick="setTaskStatus(\'' + t.slug + '\',\'done\')">完成</button>'; }
+  else { h += '<button onclick="setTaskStatus(\'' + t.slug + '\',\'doing\')">重开</button>'; }
+  h += '</span></div>';
+
+  if(t.related && t.related.length){
+    h += '<div class="tk-inds">相关：' + t.related.map(function(r){ return escapeHtml(r); }).join('、') + '</div>';
+  }
+
+  if(open){
+    if(t.steps && t.steps.length){
+      h += '<div class="tk-steps">';
+      t.steps.forEach(function(s){
+        h += '<div class="tk-step">';
+        h += '<span class="tk-box ' + (s.done ? 'on' : '') + '" onclick="event.stopPropagation();toggleStep(\''
+           + t.slug + '\',' + s.n + ',' + (s.done ? 'false' : 'true') + ')"></span>';
+        h += '<span' + (s.done ? ' style="color:#9ca3af;text-decoration:line-through"' : '') + '>'
+           + s.n + '. ' + escapeHtml(s.text) + '</span>';
+        h += '</div>';
+      });
+      h += '</div>';
+    } else {
+      h += '<div class="tk-steps mut">还没有步骤。发「开始 ' + escapeHtml(t.name)
+         + '」后一句句记，每条会自动变成这里的一项。</div>';
+    }
+    if(t.status === 'done' && t.version){
+      h += '<div class="tk-steps"><a class="exp" href="/api/export?slug=' + encodeURIComponent(t.slug) + '&fmt=docx">导出 Word</a>'
+         + '<a class="exp" href="/api/export?slug=' + encodeURIComponent(t.slug) + '&fmt=pdf">导出 PDF</a></div>';
+    }
+  }
+  h += '</div>';
+
+  (t.children || []).forEach(function(c){ h += window.taskNode(c, depth + 1); });
+  return h;
+};
+
+window.renderTasks = function(){
+  var d = window.tasksData || { groups: { todo: [], doing: [], done: [] }, stats: {} };
+  var el = document.getElementById('tklist');
+  if(!el){ return; }
+  var total = d.stats.total || 0;
+  document.getElementById('tkstat').textContent = total
+    ? ('共 ' + total + ' 个 · 进行中 ' + (d.stats.doing || 0) + ' · 已完成 ' + (d.stats.done || 0))
+    : '';
+  if(!total){
+    el.innerHTML = '<div class="mut">还没有任务。上面输入一句话就能登记待办，或在聊天里发「想做 剪辑视频学习」。</div>';
+    return;
+  }
+  var html = '';
+  ['doing', 'todo', 'done'].forEach(function(k){
+    if(window.tkFilter !== 'all' && window.tkFilter !== k){ return; }
+    var g = d.groups[k] || [];
+    if(!g.length){ return; }
+    html += '<div class="tk-group">' + window.tkLabel(k) + ' ' + g.length + '</div>';
+    g.forEach(function(t){ html += window.taskNode(t, 0); });
+  });
+  el.innerHTML = html || '<div class="mut">这个分组是空的。</div>';
+};
+
+window.toggleTask = function(slug){
+  window.tkOpen[slug] = !window.tkOpen[slug];
+  renderTasks();
+};
+
+window.toggleStep = function(slug, n, done){
+  api('/api/task/step', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug: slug, n: n, done: done }) })
+    .then(function(){ loadTasks(); }).catch(function(){});
+};
+
+window.setTaskStatus = function(slug, status){
+  api('/api/task/status', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug: slug, status: status }) })
+    .then(function(){ loadTasks(); loadCtx(); }).catch(function(){});
+};
+
+window.tkMsg = function(text, isErr){
+  var el = document.getElementById('tkmsg');
+  if(!el){ return; }
+  el.style.display = 'block';
+  el.className = 'msg' + (isErr ? ' err' : '');
+  el.textContent = text;
+};
+
+window.newTask = function(){
+  var el = document.getElementById('tknew');
+  var name = (el.value || '').trim();
+  if(!name){ return; }
+  el.value = '';
+  api('/api/task/new', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, status: 'todo' }) })
+    .then(function(d){
+      if(d.ok){ loadTasks(); tkMsg('已登记待办：' + name, false); }
+      else { tkMsg(d.err || '创建失败', true); }
+    }).catch(function(){ tkMsg('创建失败，请重试', true); });
+};
+
+window.runDigest = function(btn){
+  var old = btn.textContent;
+  btn.disabled = true; btn.textContent = '归纳中...';
+  api('/api/digest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then(function(d){
+      btn.disabled = false; btn.textContent = old;
+      if(d.err){ tkMsg('归纳失败：' + d.err, true); return; }
+      var n = (d.done || []).length;
+      var msg = n
+        ? ('本次归纳 ' + n + ' 个，产出在 05-Skills/（草稿模式则在 _待审/，确认后挪进正式目录）')
+        : ('没有新内容需要归纳（已跳过归纳过的 ' + (d.skipped || 0) + ' 个）');
+      tkMsg(msg, false);
+      loadTasks();
+    })
+    .catch(function(){ btn.disabled = false; btn.textContent = old; tkMsg('归纳失败，请重试', true); });
+};
+
 window.loadProj = function(){
   api('/api/projects').then(function(d){
     var el = document.getElementById('proj');
@@ -302,7 +501,7 @@ window.switchTo = function(s){
     .then(function(d){
       m.textContent = d.reply || '已切换';
       m.className = 'msg' + (d.error ? ' err' : '');
-      loadProj(); loadCtx();
+      loadTasks(); loadCtx();
     })
     .catch(function(){ m.textContent = '切换失败，请重试'; m.className = 'msg err'; });
 };
@@ -313,7 +512,7 @@ window.leave = function(){
       o.style.display = 'block';
       o.className = 'msg';
       o.textContent = d.reply || '已离开';
-      loadCtx(); loadProj();
+      loadCtx(); loadTasks();
     });
 };
 window.loadCtx = function(){
@@ -398,7 +597,7 @@ window.askAi = function(){
     });
 };
 window.onload = function(){
-  loadRecent(); loadProj(); loadCtx(); loadSettings();
+  loadRecent(); loadTasks(); loadCtx(); loadSettings();
   document.getElementById('file').addEventListener('change', onfile);
   document.getElementById('askq').addEventListener('keydown', function(e){
     if(e.key === 'Enter'){ askAi(); }

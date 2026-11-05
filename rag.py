@@ -53,17 +53,35 @@ def chunk_text(text, size=800):
     return out
 
 
-SKIP_NAMES = {"_project.md", "欢迎.md"}
+SKIP_NAMES = {"_project.md", "欢迎.md", "00-任务总览.md"}
 MIN_CHUNK = 4
 
 
+def _aliases(text):
+    """提取 frontmatter 里的 aliases / 别名，用于增强检索命中（搜「补间」命中「关键帧」）。"""
+    m = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.S)
+    if not m:
+        return ""
+    head = m.group(1)
+    out = []
+    for key in ("aliases", "alias", "别名"):
+        mm = re.search(r"(?m)^%s\s*:\s*(.+)$" % key, head)
+        if mm:
+            out += re.findall(r"[^\s,\[\]\"'`]+", mm.group(1))
+    out = [w for w in out if w and w not in ("[]", "-")]
+    return " ".join(out)
+
+
 def skip_file(rel_path):
-    """不索引的文件：元数据、模板、版本库、索引目录。"""
+    """不索引的文件：元数据、模板、版本库、索引目录、_ 开头的草稿目录。"""
     parts = rel_path.replace("\\", "/").split("/")
     name = parts[-1]
     if name in SKIP_NAMES:
         return True
-    return any(p in (".git", "_index", ".stversions", ".obsidian", ".trash") for p in parts)
+    if any(p in (".git", "_index", ".stversions", ".obsidian", ".trash") for p in parts):
+        return True
+    # 以 _ 开头的目录（_assets / _待审 等）一律不索引
+    return any(p.startswith("_") for p in parts[:-1])
 
 
 def ctx_prefix(rel_path):
@@ -96,7 +114,7 @@ def index_file(user, rel_path):
     store.delete_file(user, rel_path)
     if not chunks:
         return 0
-    prefix = ctx_prefix(rel_path)
+    prefix = (ctx_prefix(rel_path) + " " + _aliases(text)).strip()
     try:
         embs = get_embedder().embed([prefix + "\n" + c for c in chunks])
     except Exception:
@@ -123,7 +141,7 @@ def reindex_user(user):
         chunks = _chunks_of(text)
         if not chunks:
             continue
-        prefix = ctx_prefix(rel)
+        prefix = (ctx_prefix(rel) + " " + _aliases(text)).strip()
         try:
             embs = get_embedder().embed([prefix + "\n" + c for c in chunks])
         except Exception:
