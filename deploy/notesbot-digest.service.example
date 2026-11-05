@@ -1,0 +1,15 @@
+[Unit]
+Description=NotesBot 定时归纳（把已完成任务/标记笔记沉淀成技能卡）
+After=network.target
+
+[Service]
+Type=oneshot
+User=notesbot
+Group=notesbot
+WorkingDirectory=/srv/app/notesbot
+Environment=PYTHONPATH=/srv/app/notesbot:/srv/app/notesbot/app
+ExecStart=/srv/app/notesbot/venv/bin/python app/manage.py digest
+# 归纳会调模型，给足内存和超时；Nice 降低优先级避免影响主服务
+MemoryMax=400M
+TimeoutStartSec=1800
+Nice=10

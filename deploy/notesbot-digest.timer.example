@@ -1,0 +1,13 @@
+[Unit]
+Description=每天凌晨 3 点跑一轮知识归纳
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# 随机延迟 10 分钟，避免整点抢占资源和 API 限流
+RandomizedDelaySec=600
+# 服务器重启错过的补跑
+Persistent=true
+Unit=notesbot-digest.service
+
+[Install]
+WantedBy=timers.target
