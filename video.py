@@ -80,6 +80,18 @@ def is_url(text):
     return bool(URL_RE.match((text or "").strip()))
 
 
+# 从一段话里抠 URL：中文和中文标点一律当结束符。
+# App 复制出来的分享文案常是「链接+口令」粘成一句（抖音尤其），整段拿去请求必然失败。
+_URL_IN_TEXT = re.compile(
+    r"https?://[^\s\u4e00-\u9fff，。！？、；：\u201c\u201d\u2018\u2019（）【】《》…]+")
+
+
+def extract_url(text):
+    """抽出句子里的第一个 URL，返回干净链接（没有就返回空串）。"""
+    m = _URL_IN_TEXT.search(text or "")
+    return m.group(0).rstrip(".,;:!?)]}\"'") if m else ""
+
+
 def is_video_url(text):
     """看域名判「这大概率是个视频」——粘链接时用来区分「存个链接」和「帮我看这个视频」。"""
     t = (text or "").lower()
@@ -577,12 +589,20 @@ def _blockify(text, size=8000):
     return blocks
 
 
+_TITLE_PREFIX = re.compile(r"(?m)^(\s*[-*]\s*\[?[\d:]+\]?\s*)小标题\s*[:：]\s*")
+
+
+def _clean_summary(text):
+    """模型爱在章节行加「小标题：」前缀，读起来啰嗦，统一去掉。"""
+    return _TITLE_PREFIX.sub(r"\1", (text or "").strip()).strip()
+
+
 def summarize(pairs):
     """字幕 → 速览。超长先分块提炼再合并，避免一次塞爆上下文。"""
     full = _fmt_lines(pairs)
     if len(full) <= 9000:
-        return llm.chat("%s\n\n字幕：\n%s" % (SUMMARY_PROMPT, full),
-                        tier="main", max_tokens=2000).strip()
+        return _clean_summary(llm.chat("%s\n\n字幕：\n%s" % (SUMMARY_PROMPT, full),
+                                       tier="main", max_tokens=2000))
 
     blocks = _blockify(full)
     notes = []
@@ -593,10 +613,10 @@ def summarize(pairs):
             % (i + 1, len(blocks), b), tier="main", max_tokens=900)
         notes.append(part.strip())
     merged = "\n".join(notes)[:12000]
-    return llm.chat(
+    return _clean_summary(llm.chat(
         "%s\n\n下面是分段提炼的要点（带时间点），请合并成一份完整速览："
         "去重、按时间顺序组织。\n%s" % (SUMMARY_PROMPT, merged),
-        tier="main", max_tokens=2000).strip()
+        tier="main", max_tokens=2000))
 
 
 # ---------------- 落盘 / 读回 ----------------
@@ -618,6 +638,7 @@ def save_note(user, meta, pairs, summary, method):
         "type: video",
         "platform: %s" % (meta.get("platform") or "-"),
         "source: %s" % (src or "-"),
+        "source_raw: %s" % (meta.get("source_raw") or "-"),
         "duration: %s" % _ts(dur),
         "method: %s" % method,
         "created: %s" % datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -680,6 +701,7 @@ def parse_note(path, rel=None):
     return {
         "title": fm.get("title") or path.stem,
         "source": fm.get("source", ""),
+        "source_raw": fm.get("source_raw", ""),
         "platform": fm.get("platform", ""),
         "duration": fm.get("duration", ""),
         "method": fm.get("method", ""),
@@ -705,13 +727,19 @@ def list_notes(user, limit=50):
 
 
 def find_by_source(user, source):
-    """同一个链接不重复花钱。"""
+    """同一个链接不重复花钱。
+
+    同时比 `source`（展开后的正式地址）和 `source_raw`（用户当时粘的原始地址）：
+    抖音短链会被展开成 www.douyin.com/video/<id> 再存，只比 source 的话
+    第二次粘同一个短链就认不出来，会重复下载转写。
+    """
     if not source:
         return None
     s = source.rstrip("/")
     for item in list_notes(user, 200):
-        if (item.get("source") or "").rstrip("/") == s:
-            return item
+        for key in ("source", "source_raw"):
+            if (item.get(key) or "").rstrip("/") == s:
+                return item
     return None
 
 
@@ -819,6 +847,10 @@ def _run(jid, url, file_path):
                 meta = {"title": src.stem, "duration": _duration_of(src),
                         "platform": "本地文件", "source": ""}
                 _set(jid, title=meta["title"])
+
+            # 记下用户当时粘的原始地址：抖音短链会被展开，只存展开后的地址会导致二次去重失效
+            if url:
+                meta["source_raw"] = url
 
             if not pairs:
                 _set(jid, stage="转写音频", step=0, total=0)

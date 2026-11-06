@@ -66,6 +66,43 @@ def looks_like_question(t: str) -> bool:
     return any(t.startswith(k) for k in QUESTION_HINT)
 
 
+_CN_RE = re.compile(r"[\u4e00-\u9fff]")
+# 分享文案特征词（抖音/快手「复制打开…」那一套）
+_SHARE_HINT = re.compile(r"复制|打开抖音|打开斗音|直接观看|观看视频")
+# 用户跟在链接后面的处理意图词（「帮我处理这个视频」这种最容易被漏掉）
+_INTENT_HINT = re.compile(r"帮我|处理|总结|转写|提取字幕|转文字|翻译|看下|看看|讲什么|说什么")
+# 「记 …」是明确要存笔记，不能被视频识别抢走
+_NOTE_PREFIX = re.compile(r"^\s*(记笔记|记下|记录|记)\s*[:：]?")
+
+
+def _looks_like_share(text):
+    """认「App 复制出来的分享文案」，返回干净 URL；不像就返回空串。
+
+    真实形态：`https://v.douyin.com/xxxx/ z@t.EH 11/10 :3pm oQX:/`
+    整句只有一个 URL 的正则接不住这种（后面还挂着口令），所以单独判一次。
+    判据：
+    - 不长（<=400 字）、且不是「记 …」开头（那是用户明确要存笔记）
+    - 句子里能抠出视频站链接
+    - 链接之外的部分满足其一：几乎没有中文（纯口令乱码）／带分享特征词／带处理意图词
+      （「帮我处理这个视频」是最常见的真实说法）
+    """
+    text = (text or "").strip()
+    if not text or len(text) > 400 or _NOTE_PREFIX.match(text):
+        return ""
+    url = video.extract_url(text)
+    if not url or not video.is_video_url(url):
+        return ""
+    i = text.find(url)
+    rest = (text[:i] + " " + text[i + len(url):]).strip()
+    if not rest:
+        return url
+    if not _CN_RE.search(rest):
+        return url
+    if _SHARE_HINT.search(text) or _INTENT_HINT.search(rest):
+        return url
+    return ""
+
+
 def _split_parent(arg):
     """「学调色 属于 剪辑视频学习」→ (学调色, 剪辑视频学习)"""
     m = re.match(r"^(.+?)\s*(?:属于|上级是|归到|挂在|挂到)\s*(.+)$", arg.strip())
@@ -92,6 +129,10 @@ def _pattern_arg(m):
 
 def node_classify(state: S) -> S:
     text = state["text"].strip()
+    # 先认「App 复制的分享文案」：链接和口令粘成一句，下面按固定句式写的规则接不住
+    share = _looks_like_share(text)
+    if share:
+        return {**state, "intent": "cmd", "cmd": "videomake", "arg": share}
     for cmd, pat in CMD_PATTERNS:
         m = pat.match(text)
         if not m:
