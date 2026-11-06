@@ -141,13 +141,21 @@ def search(request: Request, q: str = ""):
     u = require(request)
     if not q.strip():
         return {"hits": []}
-    # 优先语义检索，失败降级关键词检索
-    hits = rag.search(u, q, limit=10)
-    if hits:
-        items = [{"path": h["path"], "snippet": h["text"][:200]} for h in hits]
-    else:
-        items = storage.search(u, q, limit=10)
-    return {"hits": items}
+    # 关键词 + 语义两条路都走，合并去重：
+    # 关键词命中的放前面（字面命中 > 语义命中，比如「ai学习」能命中「AI学习路径」的视频速览标题），
+    # 语义结果兜底补足数量。视频字幕目录不进向量库，但关键词仍能扫到它的标题。
+    kw = storage.search(u, q, limit=10)
+    sem = rag.search(u, q, limit=10)
+    seen, items = set(), []
+    for h in kw:
+        if h["path"] not in seen:
+            items.append(h)
+            seen.add(h["path"])
+    for h in sem:
+        if h["path"] not in seen:
+            items.append({"path": h["path"], "snippet": h["text"][:200]})
+            seen.add(h["path"])
+    return {"hits": items[:10]}
 
 
 @app.post("/api/reindex")

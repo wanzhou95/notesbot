@@ -166,6 +166,7 @@ def _bigrams(s):
 
 def search(user, query, limit=5):
     """混合检索：语义召回 → 关键词重合度重排；失败返回空列表。"""
+    root = user_dir(user)
     try:
         qemb = get_embedder().embed([query])[0]
         cands = get_store().search(user, qemb, limit=max(limit * 4, 20))
@@ -190,6 +191,9 @@ def search(user, query, limit=5):
     scored.sort(key=lambda x: -x[0])
     out, per_file = [], {}
     for score, h in scored:
+        # 文件已删/移到回收站时，索引里的旧 chunk 不会自动清，这里拦住，别把死链接塞给用户
+        if not (root / h["path"]).exists():
+            continue
         if per_file.get(h["path"], 0) >= 2:
             continue
         per_file[h["path"]] = per_file.get(h["path"], 0) + 1

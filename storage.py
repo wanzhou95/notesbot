@@ -225,6 +225,9 @@ def search(user, query, limit=5):
     for p in sorted(root.rglob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True):
         if ".git" in p.parts or "_index" in p.parts or ".stversions" in p.parts or ".obsidian" in p.parts or ".trash" in p.parts:
             continue
+        # 以 _ 开头的目录（_待审 / _assets）是草稿和附件，不进搜索（与 rag.skip_file 一致）
+        if any(part.startswith("_") for part in p.parts[:-1]):
+            continue
         if p.name in ("_project.md", "欢迎.md", "00-任务总览.md"):
             continue
         rel = str(p.relative_to(root))
@@ -234,16 +237,18 @@ def search(user, query, limit=5):
             t = p.read_text(encoding="utf-8")
         except Exception:
             continue
+        t_low = t.lower()
         best = None
         for term in terms:
-            if term in t:
+            if term.lower() in t_low:
                 best = term
                 break
         if best:
-            idx = t.find(best)
+            idx = t_low.find(best.lower())
             snippet = t[max(0, idx - 40): idx + 120].replace("\n", " ")
-            hits.append({"path": rel, "snippet": snippet})
+            hits.append({"path": rel, "snippet": snippet, "_term": best,
+                         "_mtime": p.stat().st_mtime})
             seen.add(rel)
-            if len(hits) >= limit:
-                break
-    return hits
+    # 长词命中优先（完整词 > 单字/双字碎片），同长度再按修改时间
+    hits.sort(key=lambda x: (-len(x["_term"]), -x["_mtime"]))
+    return [{"path": h["path"], "snippet": h["snippet"]} for h in hits[:limit]]
