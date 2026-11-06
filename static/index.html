@@ -83,7 +83,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v7</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v8</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -228,7 +228,7 @@ window.api = function(url, opts){
   });
 };
 window.switchPane = function(t){
-  ['write','search','projects','skills','ask','settings'].forEach(function(x){
+  ['write','search','projects','skills','video','ask','settings'].forEach(function(x){
     document.getElementById('tab-' + x).classList.toggle('on', x === t);
     document.getElementById('pane-' + x).style.display = (x === t ? 'block' : 'none');
   });
