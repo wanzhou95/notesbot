@@ -479,6 +479,43 @@ def api_digest(request: Request, body: dict):
         return JSONResponse({"ok": False, "err": str(e)})
 
 
+@app.get("/api/review/pending")
+def api_review_pending(request: Request):
+    """待审草稿列表（网页「技能」页顶部区块）。"""
+    u = require(request)
+    import review
+    items = review.pending(u)
+    return {"list": [{
+        "name": c["name"], "rel": c["rel"], "title": c["title"],
+        "kind": c["kind"], "when": c["when"], "steps": c["steps"],
+        "aliases": c["aliases"], "folder": c["folder"],
+    } for c in items], "count": len(items)}
+
+
+@app.get("/api/review/feedback")
+def api_review_feedback(request: Request):
+    """反馈台账（只读展示，改请去 Obsidian 直接编辑表格）。"""
+    u = require(request)
+    import review
+    return {"list": review.load_feedback(u)}
+
+
+@app.post("/api/review/act")
+def api_review_act(request: Request, body: dict):
+    """执行审核动作：approve / reject / revise / redo。"""
+    u = require(request)
+    import review
+    name = (body.get("name") or "").strip()
+    action = (body.get("action") or "").strip()
+    if action not in ("approve", "reject", "revise", "redo"):
+        raise HTTPException(400, "未知动作")
+    if not name:
+        raise HTTPException(400, "缺少草稿名")
+    res = review.act(u, name, action, opinion=(body.get("opinion") or "").strip(),
+                     scope_hint=(body.get("scope") or "").strip())
+    return res
+
+
 @app.get("/api/skills")
 def api_skills(request: Request):
     """技能卡列表：给网页「技能」页渲染，也保留旧的 list 字段兼容。"""

@@ -24,6 +24,13 @@ CMD_PATTERNS = [
     ("setparent", re.compile(r"^\s*(上级|父任务)\s*[:：]?\s*(.+)$")),
     ("skillmake", re.compile(r"^\s*(沉淀|存为技能|做成技能|整理成技能)\s*[:：]?\s*(.*)$")),
     ("skilllist", re.compile(r"^\s*(技能列表|有哪些技能|技能清单|技能卡)\s*$")),
+    # 归纳草稿审核（review.py）：名字与意见用冒号分隔，名字可含空格
+    ("reviewlist", re.compile(r"^\s*(待审|待审列表|审核列表|审核)\s*$")),
+    ("reviewfeedback", re.compile(r"^\s*(反馈台账|审核记录|我的意见|反馈列表)\s*$")),
+    ("reviewapprove", re.compile(r"^\s*(通过|赞同|采用)\s*[:：]?\s*(?P<arg>.+)$")),
+    ("reviewreject", re.compile(r"^\s*(否定|驳回|不要这张)\s*[:：]?\s*(?P<arg>.+)$")),
+    ("reviewrevise", re.compile(r"^\s*(意见|修改意见|改一下|改改)\s*[:：]?\s*(?P<arg>.+)$")),
+    ("reviewredo", re.compile(r"^\s*(重做|重新归纳)\s*[:：]?\s*(?P<arg>.+)$")),
     # 视频字幕：带动词的链接、裸的视频站链接、以及列表/查看
     ("videolist", re.compile(r"^\s*(视频列表|字幕列表|有哪些视频|视频笔记)\s*$")),
     ("videomake", re.compile(r"^\s*(?:总结|转写|提取字幕|看下|看看)\s*(?P<url>https?://\S+)\s*$")),
@@ -122,6 +129,18 @@ def _split_task_names(arg):
     """按顿号/逗号/分号拆多个任务名；不按空格拆，因为任务名本身可以带空格。"""
     parts = re.split(r"[、,，;；]+", (arg or "").strip())
     return [p for p in (x.strip() for x in parts) if p]
+
+
+def _split_review_arg(arg):
+    """「通过 codex使用：挺好」→ ("codex使用", "挺好")。
+
+    用冒号分隔而不按空格切：草稿名可能含空格。没冒号时整串当名字、意见为空。
+    「意见 codex使用：全局：别名最多 4 个」→ 名字 + 带范围前缀的意见（由 review 再解析）。
+    """
+    m = re.match(r"^(.+?)\s*[:：]\s*(.+)$", (arg or "").strip(), re.S)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return (arg or "").strip(), ""
 
 
 def _parent_missing(user, parent, just_created=()):
@@ -408,7 +427,38 @@ def node_command(state: S) -> S:
             lines.append("…还有 %d 张，去网页「技能」页看全部。" % (len(items) - 15))
         lines.append("")
         lines.append("发「用 卡名」按卡里的步骤开一条任务，带你一步步走；写笔记或问 AI 时命中卡片会自动带上它。")
+        lines.append("定时归纳的草稿在 _待审/，发「待审」看有哪些、发「通过 名字」转正。")
         return {**state, "reply": "\n".join(lines)}
+
+    # ---- 归纳草稿审核（review.py）----
+    if cmd == "reviewlist":
+        import review
+        return {**state, "reply": review.brief(user)}
+
+    if cmd == "reviewfeedback":
+        import review
+        rows = review.load_feedback(user)
+        if not rows:
+            return {**state, "reply": "反馈台账还是空的。审核草稿时说的话会记到 "
+                                      "_index/归纳反馈.md，下次归纳照着做。"}
+        lines = ["已记下 %d 条审核反馈（台账在 _index/归纳反馈.md）：" % len(rows)]
+        for r in rows[-15:]:
+            lines.append("• [%s·%s] %s → %s" % (r["kind"], r["scope"],
+                                              r["quote"][:36], r["rule"]))
+        if len(rows) > 15:
+            lines.append("…还有 %d 条，去 Obsidian 里打开台账看全部。" % (len(rows) - 15))
+        lines.append("不想让某条生效，把那行删掉即可。")
+        return {**state, "reply": "\n".join(lines)}
+
+    if cmd in ("reviewapprove", "reviewreject", "reviewrevise", "reviewredo"):
+        import review
+        name, opinion = _split_review_arg(arg)
+        action = {"reviewapprove": "approve", "reviewreject": "reject",
+                  "reviewrevise": "revise", "reviewredo": "redo"}[cmd]
+        if not name:
+            return {**state, "reply": "要说清是哪张草稿，例如「通过 codex使用」。发「待审」看列表。"}
+        res = review.act(user, name, action, opinion=opinion)
+        return {**state, "reply": res["msg"]}
 
     if cmd == "skilluse":
         res = skills.use_card(user, arg)

@@ -346,9 +346,22 @@ def candidates(user):
 
 # ---------------- 生成与写入 ----------------
 
-def _gen(title, text, kind, source_name):
+def _gen(title, text, kind, source_name, user=None):
+    """生成卡片。user 不为空时，把该用户审核时沉淀的反馈规则注入 prompt。
+
+    这是「审核 → 留痕 → 回流」闭环的最后一环：定时归纳与手动「沉淀 X」
+    走的是同一个函数，所以两种入口都会遵守你的口味。
+    """
     tpl = SKILL_PROMPT if kind == "skill" else WIKI_PROMPT
-    prompt = "%s\n\n卡片标题：%s\n来源：%s\n\n材料：\n%s" % (tpl, title, source_name, text[-6000:])
+    rules = ""
+    if user:
+        try:
+            import review
+            rules = review.rules_for(user, title, source_name, kind)
+        except Exception:
+            rules = ""        # 台账坏了不能拖垮归纳，静默降级
+    prompt = "%s%s\n\n卡片标题：%s\n来源：%s\n\n材料：\n%s" % (
+        tpl, rules, title, source_name, text[-6000:])
     raw = get_llm().chat(prompt, tier="main", max_tokens=4000)
     if (raw or "").startswith("[模型调用失败]"):
         raise RuntimeError((raw or "")[:80])
@@ -385,7 +398,7 @@ def make_skill_card(user, slug, title):
         return "《%s》没有可归纳的内容（步骤记录和攻略都是空的）。" % t["name"]
     title = (title or t["name"]).strip() or t["name"]
     try:
-        md, al = _gen(title, text, "skill", t["name"])
+        md, al = _gen(title, text, "skill", t["name"], user=user)
     except Exception as e:
         return "生成失败：%s" % e
     path = _write_card(user, md, title, "skill", draft=False)
@@ -395,7 +408,7 @@ def make_skill_card(user, slug, title):
 
 def make_wiki_page(user, title, text, source_name=""):
     """把一段材料整理成知识词条（06-Wiki）。"""
-    md, _al = _gen(title, text, "wiki", source_name or title)
+    md, _al = _gen(title, text, "wiki", source_name or title, user=user)
     return _write_card(user, md, title, "wiki", draft=False)
 
 
@@ -420,8 +433,14 @@ def _write_report(user, items, skipped, failed, elapsed):
              "- 跳过（已归纳）：%d 个" % skipped,
              "- 失败：%d 个" % len(failed),
              "- 耗时：%.1f 秒" % elapsed]
+    try:
+        import review
+        n = len(review.load_feedback(user))
+        lines.append("- 参考你的审核反馈：%d 条（台账 `_index/归纳反馈.md`）" % n)
+    except Exception:
+        pass
     if DRAFT:
-        lines.append("- 模式：**草稿**（产出在 `_待审/`，确认后挪进正式目录）")
+        lines.append("- 模式：**草稿**（产出在 `_待审/`，去网页「技能」页审核，或发「待审」）")
     lines.append("")
     if items:
         lines += ["## 本次产出", ""]
@@ -457,7 +476,7 @@ def run(user, limit=None, dry_run=False):
     for c in pending[:limit]:
         try:
             kind = "skill"
-            md, _al = _gen(c["title"], c["text"], kind, c["source_name"])
+            md, _al = _gen(c["title"], c["text"], kind, c["source_name"], user=user)
             path = _write_card(user, md, c["title"], kind)
             rel = str(path.relative_to(user_dir(user))).replace("\\", "/")
             ledger[c["key"]] = c["hash"]
