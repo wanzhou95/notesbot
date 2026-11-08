@@ -17,6 +17,7 @@ CMD_PATTERNS = [
     ("start", re.compile(r"^\s*(开始|新建项目|开一个|开工)\s*(.+)$")),
     ("switch", re.compile(r"^\s*(切到|切换到|切换)\s*(.+)$")),
     ("todo", re.compile(r"^\s*(想做|待办|加个待办|加入待办|计划做)\s*[:：]?\s*(.+)$")),
+    ("addchild", re.compile(r"^\s*(?:加子任务|加个子任务|新建子任务|子任务)\s*[:：]?\s*(?P<arg>.+)$")),
     ("stepdone", re.compile(r"^\s*(完成|搞定|做完|勾掉)\s*第?\s*(\d+)\s*[步项]?\s*$")),
     ("taskdone", re.compile(r"^\s*(任务完成|标记完成)\s*(.*)$")),
     ("linkadd", re.compile(r"^\s*(关联|相关联?于)\s*[:：]?\s*(.+)$")),
@@ -117,6 +118,29 @@ def _split_names(arg):
     return [p for p in (x.strip() for x in parts) if p]
 
 
+def _split_task_names(arg):
+    """按顿号/逗号/分号拆多个任务名；不按空格拆，因为任务名本身可以带空格。"""
+    parts = re.split(r"[、,，;；]+", (arg or "").strip())
+    return [p for p in (x.strip() for x in parts) if p]
+
+
+def _parent_missing(user, parent, just_created=()):
+    """父任务是否还不存在。
+
+    语义和 tasks.render_index 的 `p in by_name` 保持一致（按任务名精确匹配），
+    免得提示和实际缩进结果对不上。`just_created` 是本次刚建出来的名字，
+    用于「想做 A、B 属于 A」这种同一批里父子一起建的情况。
+    """
+    if not parent or parent in just_created:
+        return False
+    names = {t["name"] for t in tasks.list_tasks(user)}
+    return parent not in names
+
+
+PARENT_MISSING_HINT = ("⚠ 上级《%s》还不存在，层级暂时不会缩进显示。"
+                       "发「想做 %s」把它建出来就会自动接上（不用补挂）。")
+
+
 def _pattern_arg(m):
     """取匹配到的参数：新命令用命名组，老命令用第 2 组。"""
     d = m.groupdict()
@@ -173,24 +197,63 @@ def node_command(state: S) -> S:
             return {**state, "reply": "任务名不能为空，比如「开始 剪辑视频学习」。"}
         if parent:
             tasks.set_parent(user, slug, parent)
+        hint = ("\n" + PARENT_MISSING_HINT % (parent, parent)) if _parent_missing(user, parent, (name,)) else ""
         if not new:
-            return {**state, "reply": "任务《%s》已存在，已切换过去。" % name}
+            return {**state, "reply": "任务《%s》已存在，已切换过去。%s" % (name, hint)}
         if parent:
-            return {**state, "reply": "已创建任务《%s》（挂在《%s》下），开始记录，说完发「结束」。" % (name, parent)}
+            return {**state, "reply": "已创建任务《%s》（挂在《%s》下），开始记录，说完发「结束」。%s" % (name, parent, hint)}
         return {**state, "reply": "已创建任务《%s》，开始记录，说完发「结束」生成行动攻略。" % name}
 
     if cmd == "todo":
-        name, parent = _split_parent(arg)
-        slug, new = tasks.create_task(user, name, status="todo", parent=parent or None)
-        if not slug:
+        raw, parent = _split_parent(arg)
+        names = _split_task_names(raw)
+        if not names:
             return {**state, "reply": "任务名不能为空，比如「想做 剪辑视频学习」。"}
-        if not new:
-            return {**state, "reply": "《%s》已经在任务列表里了。" % name}
-        msg = "已加入待办：《%s》" % name
+        made, exist = [], []
+        for n in names:
+            slug, new = tasks.create_task(user, n, status="todo", parent=parent or None)
+            if slug and new:
+                made.append(n)
+            elif slug:
+                exist.append(n)
+        lines = []
+        if made:
+            lines.append("已加入待办：" + "、".join("《%s》" % n for n in made))
+        if exist:
+            lines.append("已存在：" + "、".join("《%s》" % n for n in exist))
         if parent:
-            msg += "（上级：%s）" % parent
-        msg += "。开始做的时候说「开始 %s」。" % name
-        return {**state, "reply": msg}
+            lines.append("（上级：%s）" % parent)
+            if _parent_missing(user, parent, made):
+                lines.append(PARENT_MISSING_HINT % (parent, parent))
+        if made:
+            lines.append("开始做的时候说「开始 %s」。" % made[0])
+        return {**state, "reply": "\n".join(lines)}
+
+    if cmd == "addchild":
+        parent_slug = st.get("active")
+        if not parent_slug:
+            return {**state, "reply": ("先「开始 X」或「切到 X」进入一个任务，再发「加子任务 Y」，"
+                                       "Y 会自动挂在当前任务下面。")}
+        p = tasks.read_task(user, parent_slug) or {}
+        pname = p.get("name") or parent_slug
+        names = _split_task_names(arg)
+        if not names:
+            return {**state, "reply": "子任务名不能为空，比如「加子任务 飞书内容」。"}
+        made, exist = [], []
+        for n in names:
+            slug, new = tasks.create_task(user, n, status="todo", parent=pname)
+            if slug and new:
+                made.append(n)
+            elif slug:
+                exist.append(n)
+        lines = []
+        if made:
+            lines.append("已在《%s》下加了子任务：%s" % (pname, "、".join("《%s》" % n for n in made)))
+        if exist:
+            lines.append("已存在：" + "、".join("《%s》" % n for n in exist))
+        lines.append("当前任务仍是《%s》。要往下做某层，发「切到 名字」；再往下加一层，"
+                     "就在那层里再发「加子任务 名字」。" % pname)
+        return {**state, "reply": "\n".join(lines)}
 
     if cmd == "switch":
         target = tasks.find_task(user, arg)
@@ -306,9 +369,15 @@ def node_command(state: S) -> S:
         slug = st.get("active")
         if not slug:
             return {**state, "reply": "先切到一个任务，再说「上级 父任务名」。"}
-        if tasks.set_parent(user, slug, arg.strip()):
-            return {**state, "reply": "已把《%s》的上级设为《%s》，总览里会缩进显示。" % (
-                (tasks.read_task(user, slug) or {}).get("name", slug), arg.strip())}
+        parent = arg.strip()
+        if tasks.set_parent(user, slug, parent):
+            msg = "已把《%s》的上级设为《%s》。" % (
+                (tasks.read_task(user, slug) or {}).get("name", slug), parent)
+            if _parent_missing(user, parent):
+                msg += "\n" + PARENT_MISSING_HINT % (parent, parent)
+            else:
+                msg += "总览里会缩进显示。"
+            return {**state, "reply": msg}
         return {**state, "reply": "设置失败：上级不能是它自己。"}
 
     if cmd == "skillmake":
