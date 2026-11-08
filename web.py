@@ -395,6 +395,21 @@ def api_task_status(request: Request, body: dict):
     return {"ok": ok}
 
 
+@app.post("/api/task/switch")
+def api_task_switch(request: Request, body: dict):
+    """把某个任务设为「当前任务」（网页任务页的「切到」按钮）。"""
+    u = require(request)
+    import tasks
+    slug = (body.get("slug") or "").strip()
+    t = tasks.read_task(u, slug) if slug else None
+    if not t:
+        raise HTTPException(404, "任务不存在")
+    st = storage.load_state(u)
+    st["active"] = slug
+    storage.save_state(u, st)
+    return {"ok": True, "name": t.get("name", slug)}
+
+
 @app.post("/api/task/link")
 def api_task_link(request: Request, body: dict):
     """设置上级 / 添加相关任务。"""

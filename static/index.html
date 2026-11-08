@@ -47,6 +47,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .tk-group{font-size:12px;color:var(--mut);font-weight:600;margin:16px 0 8px 2px}
 .tk-group:first-child{margin-top:0}
 .tk{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--card)}
+.tk-cur{border-color:var(--acc);box-shadow:inset 3px 0 0 var(--acc)}
 .tk-row{display:flex;align-items:center;gap:9px;cursor:pointer;flex-wrap:wrap}
 .tk-dot{width:13px;height:13px;border-radius:50%;flex:none;border:1.5px solid #9ca3af;box-sizing:border-box}
 .tk-dot.doing{border:3.5px solid var(--acc)}
@@ -59,6 +60,10 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .tk-tag{font-size:11px;padding:2px 7px;border-radius:4px;border:1px solid var(--line);color:var(--mut)}
 .tk-acts{display:flex;gap:6px;margin-left:auto}
 .tk-acts button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:3px 10px;font-size:12px;cursor:pointer;color:var(--acc)}
+.tk-acts button.sw{color:var(--mut);border-style:dashed}
+.tk-acts button.sw:hover:not(:disabled){color:var(--acc);border-style:solid}
+.tk-acts button:disabled{opacity:.5;cursor:default}
+.tk-cur-tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--acc);color:#fff;flex:none}
 .tk-inds{font-size:11px;color:var(--mut);padding:4px 0 0 22px}
 .tk-steps{margin-top:8px;padding:8px 0 0 22px;border-top:1px dashed var(--line)}
 .tk-step{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:13px;line-height:1.5}
@@ -83,7 +88,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v8</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v9</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -408,15 +413,22 @@ window.taskNode = function(t, depth){
   else if(t.total){ meta = t.done + '/' + t.total + ' 步'; }
   else { meta = t.status === 'todo' ? '还没开始' : '进行中'; }
 
-  var h = '<div class="tk" style="margin-left:' + (depth * 16) + 'px">';
+  var activeSlug = (window.tasksData || {}).active;
+  var isCur = activeSlug && activeSlug === t.slug;
+  var h = '<div class="tk' + (isCur ? ' tk-cur' : '') + '" style="margin-left:' + (depth * 16) + 'px">';
   h += '<div class="tk-row" onclick="toggleTask(\'' + t.slug + '\')">';
   h += '<span class="tk-dot ' + t.status + '"></span>';
   h += '<span class="tk-name ' + t.status + '">' + escapeHtml(t.name) + '</span>';
+  if(isCur){ h += '<span class="tk-cur-tag">当前</span>'; }
   if(t.total && t.status !== 'done'){
     h += '<span class="tk-bar"><i style="width:' + barW + '%"></i></span>';
   }
   h += '<span class="tk-meta">' + meta + '</span>';
   h += '<span class="tk-acts" onclick="event.stopPropagation()">';
+  if(t.status !== 'done'){
+    h += '<button class="sw" onclick="switchTo(\'' + t.slug + '\')"' + (isCur ? ' disabled' : '') + '>'
+       + (isCur ? '当前' : '切到') + '</button>';
+  }
   if(t.status === 'todo'){ h += '<button onclick="setTaskStatus(\'' + t.slug + '\',\'doing\')">开始</button>'; }
   else if(t.status === 'doing'){ h += '<button onclick="setTaskStatus(\'' + t.slug + '\',\'done\')">完成</button>'; }
   else { h += '<button onclick="setTaskStatus(\'' + t.slug + '\',\'doing\')">重开</button>'; }
@@ -734,39 +746,16 @@ window.renderVideos = function(){
   });
 };
 
-window.loadProj = function(){
-  api('/api/projects').then(function(d){
-    var el = document.getElementById('proj');
-    if(!d.list || !Object.keys(d.list).length){
-      el.innerHTML = '<div class="mut">还没有项目，输入「开始 项目名」创建</div>';
-      return;
-    }
-    el.innerHTML = Object.entries(d.list).map(function(e){
-      var slug = e[0], p = e[1];
-      var cur = slug === d.active ? ' ←当前' : '';
-      var exp = '';
-      if(p.version > 0){
-        exp = '<div style="margin-top:6px"><a class="exp" href="/api/export?slug=' + encodeURIComponent(slug) + '&fmt=docx">导出 Word</a> '
-            + '<a class="exp" href="/api/export?slug=' + encodeURIComponent(slug) + '&fmt=pdf">导出 PDF</a></div>';
-      }
-      return '<div class="proj"><div><b>' + escapeHtml(p.name) + '</b><div class="mut">' +
-        p.steps + ' 步 · v' + p.version + (p.status === 'done' ? ' · 已完成' : '') + cur +
-        '</div>' + exp + '</div><button class="btn ghost" style="width:auto" onclick="switchTo(\'' + slug + '\')">切到</button></div>';
-    }).join('');
-  });
-};
-window.switchTo = function(s){
-  var m = document.getElementById('projmsg');
-  m.style.display = 'block';
-  m.className = 'msg';
-  m.textContent = '切换中...';
-  api('/api/msg', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:'切到 ' + s})})
+window.switchTo = function(slug){
+  tkMsg('切换中...', false);
+  api('/api/task/switch', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({slug: slug})})
     .then(function(d){
-      m.textContent = d.reply || '已切换';
-      m.className = 'msg' + (d.error ? ' err' : '');
+      tkMsg(d.ok ? ('已切换到《' + (d.name || slug) + '》，去「写笔记」发消息就会记到这个任务。')
+                 : (d.err || '切换失败'), !d.ok);
       loadTasks(); loadCtx();
     })
-    .catch(function(){ m.textContent = '切换失败，请重试'; m.className = 'msg err'; });
+    .catch(function(){ tkMsg('切换失败，请重试', true); });
 };
 window.leave = function(){
   api('/api/msg', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:'离开'})})
