@@ -265,6 +265,86 @@ def list_tasks(user):
     return out
 
 
+def list_orphan_notes(user):
+    """01-Projects 根目录下，没被收纳进任务目录的散笔记。
+
+    成因：AI 归类把「obsidian知识库搭建」这类内容归到 01-Projects，
+    write_note 直接在根目录写了一个 <时间戳>-<标题>.md，但任务体系只认
+    <日期-任务名>/<任务名>.md 的子目录结构，所以这些笔记在任务页一直不可见。
+    """
+    out = []
+    root = projects_root(user)
+    if not root.exists():
+        return out
+    for p in sorted(root.iterdir()):
+        if not p.is_file() or p.suffix.lower() != ".md":
+            continue
+        if p.name in (INDEX_NAME, GUIDE_NAME, FLOW_NAME) or p.name.startswith(("_", ".")):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        raw, body = split_fm(text)
+        fm = parse_fm(raw)
+        # 标题：frontmatter title > 正文第一行 > 去掉时间戳的文件名
+        title = clean(fm.get("title"))
+        if not title:
+            for line in body.splitlines():
+                line = line.strip().lstrip("#").strip()
+                if line and not line.startswith("- ["):
+                    title = line[:40]
+                    break
+        if not title:
+            title = re.sub(r"^\d{8}-\d{6}-", "", p.stem)
+        out.append({
+            "path": p.name,
+            "name": title or p.stem,
+            "snippet": " ".join(body.split())[:120],
+            "mtime": p.stat().st_mtime,
+        })
+    return out
+
+
+def adopt_note(user, filename, name=None):
+    """把根目录的散笔记转成一个正式任务：建任务目录、把原文记成第 1 步、移走原文件。"""
+    root = projects_root(user)
+    p = root / filename
+    if p.parent != root or not p.is_file() or p.suffix.lower() != ".md":
+        return None, "文件不存在或不在 01-Projects 根目录"
+    if p.name in (INDEX_NAME, GUIDE_NAME, FLOW_NAME) or p.name.startswith(("_", ".")):
+        return None, "这个文件不能转"
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception:
+        return None, "读取失败"
+    raw, body = split_fm(text)
+    fm = parse_fm(raw)
+    title = (name or clean(fm.get("title"))
+             or next((ln.strip().lstrip("#").strip() for ln in body.splitlines()
+                      if ln.strip() and not ln.strip().startswith("- [")), "")
+             or re.sub(r"^\d{8}-\d{6}-", "", p.stem)).strip()
+    if not title:
+        return None, "解析不出任务名"
+    slug, new = create_task(user, title, status="todo")
+    if not slug:
+        return None, "任务名不合法"
+    if not new:
+        return None, "同名任务已存在：《%s》" % title
+    # 原笔记正文作为第 1 步，内容不丢
+    content = " ".join(body.split())[:500]
+    if content:
+        append_step(user, slug, content)
+    # 移进 _index/_已收纳/，避免下次又被扫出来（不直接删除，留个底）
+    archive = root / "_index" / "_已收纳"
+    archive.mkdir(parents=True, exist_ok=True)
+    try:
+        p.rename(archive / p.name)
+    except Exception:
+        pass
+    return slug, ""
+
+
 def find_task(user, query, exact=False):
     q = (query or "").strip()
     if not q:

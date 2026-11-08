@@ -338,7 +338,23 @@ def api_tasks(request: Request):
         groups[key] = [_task_node(t, kids) for t in
                        sorted([x for x in roots if x["status"] == key],
                               key=lambda x: x["mtime"], reverse=True)]
-    return {"groups": groups, "stats": tasks.stats(u, ts), "active": st.get("active")}
+    return {"groups": groups, "stats": tasks.stats(u, ts), "active": st.get("active"),
+            "orphans": tasks.list_orphan_notes(u)}
+
+
+@app.post("/api/task/adopt")
+def api_task_adopt(request: Request, body: dict):
+    """把 01-Projects 根目录的散笔记转成一个正式任务。"""
+    u = require(request)
+    import tasks
+    filename = (body.get("path") or "").strip()
+    name = (body.get("name") or "").strip() or None
+    if not filename:
+        raise HTTPException(400, "缺少 path")
+    slug, err = tasks.adopt_note(u, filename, name)
+    if err:
+        return JSONResponse({"ok": False, "err": err})
+    return {"ok": True, "slug": slug}
 
 
 @app.post("/api/task/new")
@@ -393,6 +409,31 @@ def api_task_status(request: Request, body: dict):
             st["active"] = slug
             storage.save_state(u, st)
     return {"ok": ok}
+
+
+@app.get("/api/task/search")
+def api_task_search(request: Request, q: str = ""):
+    """模糊搜任务，给「切换项目」输入框做候选下拉。
+
+    支持不完整名字、别名（slug 里的日期前缀去掉后也能搜）；空查询返回全部任务，
+    方便直接点选。进行中的排前面（最可能是想切回去的那个）。
+    """
+    u = require(request)
+    import tasks
+    ql = (q or "").strip().lower()
+    out = []
+    for t in tasks.list_tasks(u):
+        hay = (t["name"] + " " + t["slug"]).lower()
+        if ql and ql not in hay:
+            continue
+        out.append({
+            "slug": t["slug"], "name": t["name"], "status": t["status"],
+            "done": t["done"], "total": t["total"],
+            "parent": t.get("parent") or "",
+        })
+    rank = {"doing": 0, "todo": 1, "done": 2}
+    out.sort(key=lambda x: (rank.get(x["status"], 3), x["name"]))
+    return {"list": out[:20], "q": q}
 
 
 @app.post("/api/task/switch")

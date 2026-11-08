@@ -75,6 +75,11 @@ def categorize_and_write(user, text, source="bot"):
         cat = out.strip()
         if cat not in storage.CATEGORIES:
             cat = next((c for c in storage.CATEGORIES if c in out), "00-灵感库")
+    # 01-Projects 是任务体系的专用目录（<日期-任务名>/<任务名>.md），
+    # 普通笔记直接写进根目录会变成任务页看不到的「散笔记」。
+    # 想建任务请用「开始 X」/「想做 X」，这里把误判兜底到灵感库。
+    if cat == "01-Projects":
+        cat = "00-灵感库"
     path = storage.write_note(user, text, category=cat, source=source)
     rel = str(path.relative_to(storage.user_dir(user))).replace("\\", "/")
     return cat, rel

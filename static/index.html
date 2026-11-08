@@ -64,6 +64,15 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .tk-acts button.sw:hover:not(:disabled){color:var(--acc);border-style:solid}
 .tk-acts button:disabled{opacity:.5;cursor:default}
 .tk-cur-tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--acc);color:#fff;flex:none}
+.sw-wrap{position:relative}
+.sw-list{position:absolute;top:100%;left:0;right:0;z-index:20;background:var(--card);border:1px solid var(--line);border-radius:10px;margin-top:4px;max-height:260px;overflow-y:auto;box-shadow:0 6px 20px rgba(0,0,0,.10)}
+.sw-item{padding:9px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);font-size:14px}
+.sw-item:last-child{border-bottom:0}
+.sw-item.on,.sw-item:hover{background:#eef2ff}
+.sw-item b{font-weight:600;color:var(--tx)}
+.sw-item .sw-p{font-size:11px;color:var(--mut)}
+.sw-item .sw-st{font-size:11px;color:var(--mut);margin-left:auto;flex:none}
+.sw-empty{padding:10px 12px;color:var(--mut);font-size:13px}
 .tk-inds{font-size:11px;color:var(--mut);padding:4px 0 0 22px}
 .tk-steps{margin-top:8px;padding:8px 0 0 22px;border-top:1px dashed var(--line)}
 .tk-step{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:13px;line-height:1.5}
@@ -88,7 +97,7 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v9</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v10</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -104,6 +113,12 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
       <span id="ctx" class="mut"></span>
       <button id="leaveBtn" class="btn ghost" style="width:auto;display:none;padding:4px 10px;font-size:13px" onclick="leave()">离开项目</button>
+    </div>
+    <div class="sw-wrap" style="margin-bottom:10px">
+      <input id="swInput" class="inp" style="font-size:14px;padding:8px 10px" autocomplete="off"
+        placeholder="切换项目：输入几个字，从下拉里选（不用打全名）"
+        oninput="onSwitchInput()" onkeydown="onSwitchKey(event)" onfocus="onSwitchInput()" onblur="hideSwitchList()">
+      <div id="swList" class="sw-list" style="display:none"></div>
     </div>
     <textarea id="txt" class="inp" rows="4" placeholder="写点什么，或输入命令：开始 X / 结束 / 列表"></textarea>
     <div class="row" style="margin-top:8px"><button class="btn" onclick="send()">发送</button><button class="btn ghost" onclick="pickFile()">📎 上传</button></div>
@@ -128,6 +143,10 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
       <span id="tkstat" class="mut"></span>
     </div>
     <div id="tkmsg" style="display:none" class="msg"></div>
+  </div>
+  <div class="card" id="orphanCard" style="display:none">
+    <div class="mut" style="margin-bottom:8px">未纳入任务的笔记（散落在 01-Projects 根目录）</div>
+    <div id="orphanList"></div>
   </div>
   <div class="card">
     <div style="margin-bottom:12px">
@@ -469,6 +488,7 @@ window.renderTasks = function(){
   var d = window.tasksData || { groups: { todo: [], doing: [], done: [] }, stats: {} };
   var el = document.getElementById('tklist');
   if(!el){ return; }
+  renderOrphans(d.orphans || []);
   var total = d.stats.total || 0;
   document.getElementById('tkstat').textContent = total
     ? ('共 ' + total + ' 个 · 进行中 ' + (d.stats.doing || 0) + ' · 已完成 ' + (d.stats.done || 0))
@@ -486,6 +506,34 @@ window.renderTasks = function(){
     g.forEach(function(t){ html += window.taskNode(t, 0); });
   });
   el.innerHTML = html || '<div class="mut">这个分组是空的。</div>';
+};
+
+window.renderOrphans = function(list){
+  var card = document.getElementById('orphanCard');
+  var el = document.getElementById('orphanList');
+  if(!card || !el){ return; }
+  if(!list.length){ card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  el.innerHTML = list.map(function(o){
+    return '<div class="item" style="display:flex;align-items:center;gap:8px">'
+      + '<div style="flex:1"><b>' + escapeHtml(o.name) + '</b>'
+      + (o.snippet ? '<div class="mut">' + escapeHtml(o.snippet) + '</div>' : '')
+      + '<div class="mut" style="font-size:11px">' + escapeHtml(o.path) + '</div></div>'
+      + '<button class="btn ghost" style="width:auto;padding:5px 10px;font-size:12px" '
+      + 'onclick="adoptNote(\'' + escAttr(o.path) + '\')">转为任务</button></div>';
+  }).join('');
+};
+
+window.adoptNote = function(path){
+  tkMsg('转换中...', false);
+  api('/api/task/adopt', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({path: path})})
+    .then(function(d){
+      tkMsg(d.ok ? '已转成任务，原笔记移到 01-Projects/_index/_已收纳/（内容保留为第 1 步）'
+                 : (d.err || '转换失败'), !d.ok);
+      loadTasks(); loadCtx();
+    })
+    .catch(function(){ tkMsg('转换失败，请重试', true); });
 };
 
 window.toggleTask = function(slug){
@@ -747,15 +795,89 @@ window.renderVideos = function(){
 };
 
 window.switchTo = function(slug){
-  tkMsg('切换中...', false);
+  function report(msg, isErr){
+    tkMsg(msg, isErr);                       // 任务页
+    var o = document.getElementById('out');    // 写笔记页
+    if(o){ o.style.display = 'block'; o.className = 'msg' + (isErr ? ' err' : ''); o.textContent = msg; }
+  }
+  report('切换中...', false);
   api('/api/task/switch', {method:'POST', headers:{'Content-Type':'application/json'},
     body:JSON.stringify({slug: slug})})
     .then(function(d){
-      tkMsg(d.ok ? ('已切换到《' + (d.name || slug) + '》，去「写笔记」发消息就会记到这个任务。')
-                 : (d.err || '切换失败'), !d.ok);
+      report(d.ok ? ('已切换到《' + (d.name || slug) + '》，发消息就会记到这个任务。')
+                  : (d.err || '切换失败'), !d.ok);
       loadTasks(); loadCtx();
     })
-    .catch(function(){ tkMsg('切换失败，请重试', true); });
+    .catch(function(){ report('切换失败，请重试', true); });
+};
+
+window.swCands = [];
+window.swIndex = -1;
+window.swTimer = null;
+window.onSwitchInput = function(){
+  var q = (document.getElementById('swInput').value || '').trim();
+  clearTimeout(window.swTimer);
+  window.swTimer = setTimeout(function(){ fetchSwitchCands(q); }, 120);
+};
+window.fetchSwitchCands = function(q){
+  api('/api/task/search?q=' + encodeURIComponent(q)).then(function(d){
+    window.swCands = d.list || [];
+    window.swIndex = -1;
+    renderSwitchList();
+  }).catch(function(){ hideSwitchList(); });
+};
+window.renderSwitchList = function(){
+  var el = document.getElementById('swList');
+  if(!el){ return; }
+  if(!window.swCands.length){
+    el.innerHTML = '<div class="sw-empty">没有匹配的任务。要新建的话发「开始 任务名」。</div>';
+    el.style.display = 'block';
+    return;
+  }
+  var h = '';
+  window.swCands.forEach(function(t, i){
+    var st = {doing:'进行中', todo:'待办', done:'已完成'}[t.status] || '';
+    var prog = t.total ? (t.done + '/' + t.total + ' 步') : st;
+    h += '<div class="sw-item' + (i === window.swIndex ? ' on' : '') + '"'
+       + ' onmousedown="event.preventDefault()" onclick="pickSwitch(' + i + ')">'
+       + '<b>' + escapeHtml(t.name) + '</b>'
+       + (t.parent ? '<span class="sw-p">上级 ' + escapeHtml(t.parent) + '</span>' : '')
+       + '<span class="sw-st">' + escapeHtml(prog) + '</span></div>';
+  });
+  el.innerHTML = h;
+  el.style.display = 'block';
+};
+window.hideSwitchList = function(){
+  var el = document.getElementById('swList');
+  if(el){ el.style.display = 'none'; }
+};
+window.onSwitchKey = function(e){
+  var el = document.getElementById('swList');
+  if(!el || el.style.display === 'none'){ return; }
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    if(!window.swCands.length){ return; }
+    window.swIndex += (e.key === 'ArrowDown' ? 1 : -1);
+    if(window.swIndex < 0){ window.swIndex = window.swCands.length - 1; }
+    if(window.swIndex >= window.swCands.length){ window.swIndex = 0; }
+    renderSwitchList();
+    var on = el.querySelector('.sw-item.on');
+    if(on && on.scrollIntoView){ on.scrollIntoView({block:'nearest'}); }
+  } else if(e.key === 'Enter'){
+    e.preventDefault();
+    if(window.swIndex >= 0){ pickSwitch(window.swIndex); }
+    else if(window.swCands.length){ pickSwitch(0); }
+  } else if(e.key === 'Escape'){
+    hideSwitchList(); document.getElementById('swInput').blur();
+  }
+};
+window.pickSwitch = function(i){
+  var t = window.swCands[i];
+  if(!t){ return; }
+  var input = document.getElementById('swInput');
+  input.value = '';
+  hideSwitchList();
+  switchTo(t.slug);
 };
 window.leave = function(){
   api('/api/msg', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:'离开'})})
