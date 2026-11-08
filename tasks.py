@@ -645,7 +645,7 @@ def _fmt_ver(v):
 
 
 def render_index(user, tasks=None):
-    """生成 00-任务总览.md（三段分组 + 子任务缩进）。"""
+    """生成 00-任务总览.md（三段分组 + 递归子任务缩进，层数不设上限）。"""
     tasks = tasks if tasks is not None else list_tasks(user)
     refresh_links(user, tasks)
 
@@ -666,6 +666,18 @@ def render_index(user, tasks=None):
     lines = ["> 本文件由 bot 自动生成，手改会被下次刷新覆盖。", "",
              "# 任务总览", "", "更新于 %s" % _ts(), ""]
 
+    def walk(node, depth, seen):
+        """递归渲染整棵子树，层数不设上限（与网页 _task_node 对齐）。
+
+        seen 用任务名去重，防止 parent 意外成环时无限递归把总览写爆。
+        """
+        if node["name"] in seen:
+            return
+        seen.add(node["name"])
+        lines.append(_node_line(node, depth, rel_map))
+        for c in sorted(kids.get(node["name"], []), key=sk, reverse=True):
+            walk(c, depth + 1, seen)
+
     empty = True
     for key, label in (("todo", "待办"), ("doing", "进行中"), ("done", "已完成")):
         group = sorted([t for t in roots if t["status"] == key], key=sk, reverse=True)
@@ -674,11 +686,7 @@ def render_index(user, tasks=None):
         empty = False
         lines.append("## %s %d" % (label, len(group)))
         for t in group:
-            lines.append(_node_line(t, 0, rel_map))
-            for c in sorted(kids.get(t["name"], []), key=sk, reverse=True):
-                lines.append(_node_line(c, 1, rel_map))
-                for g in sorted(kids.get(c["name"], []), key=sk, reverse=True):
-                    lines.append(_node_line(g, 2, rel_map))
+            walk(t, 0, set())
         lines.append("")
 
     if empty:
