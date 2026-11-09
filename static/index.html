@@ -79,6 +79,14 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .tk-box{width:15px;height:15px;border-radius:4px;border:1.5px solid #9ca3af;flex:none;cursor:pointer;margin-top:1px;box-sizing:border-box;position:relative}
 .tk-box.on{background:var(--acc);border-color:var(--acc)}
 .tk-box.on::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.kb{display:flex;gap:12px;align-items:flex-start;overflow-x:auto}
+.kb-col{flex:1;min-width:200px;background:#f0f1f4;border:1px solid var(--line);border-radius:12px;padding:10px;min-height:160px}
+.kb-col.drag{background:#eef2ff;border-color:var(--acc)}
+.kb-hd{font-size:13px;font-weight:600;margin:2px 2px 10px;color:var(--tx)}
+.kb-hd .cnt{color:var(--mut);font-weight:400;font-size:12px;margin-left:4px}
+.kb-card{cursor:grab}
+.kb-card:active{cursor:grabbing}
+.kb-empty{color:var(--mut);font-size:12px;text-align:center;padding:24px 0}
 .sk{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--card)}
 .sk-hd{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .sk-hd b{font-size:14px}
@@ -461,7 +469,7 @@ window.taskNode = function(t, depth){
 
   var activeSlug = (window.tasksData || {}).active;
   var isCur = activeSlug && activeSlug === t.slug;
-  var h = '<div class="tk' + (isCur ? ' tk-cur' : '') + '" style="margin-left:' + (depth * 16) + 'px">';
+  var h = '<div class="tk kb-card' + (isCur ? ' tk-cur' : '') + '" draggable="true" data-slug="' + t.slug + '" style="margin-left:' + (depth * 16) + 'px" ondragstart="kbDrag(event,\'' + t.slug + '\')" ondragend="kbDragEnd()">';
   h += '<div class="tk-row" onclick="toggleTask(\'' + t.slug + '\')">';
   h += '<span class="tk-dot ' + t.status + '"></span>';
   h += '<span class="tk-name ' + t.status + '">' + escapeHtml(t.name) + '</span>';
@@ -524,15 +532,18 @@ window.renderTasks = function(){
     el.innerHTML = '<div class="mut">还没有任务。上面输入一句话就能登记待办，或在聊天里发「想做 剪辑视频学习」。</div>';
     return;
   }
-  var html = '';
+  var html = '<div class="kb">';
   ['doing', 'todo', 'done'].forEach(function(k){
     if(window.tkFilter !== 'all' && window.tkFilter !== k){ return; }
     var g = d.groups[k] || [];
-    if(!g.length){ return; }
-    html += '<div class="tk-group">' + window.tkLabel(k) + ' ' + g.length + '</div>';
+    html += '<div class="kb-col" data-status="' + k + '" ondragover="kbOver(event)" ondrop="kbDrop(event,\'' + k + '\')">';
+    html += '<div class="kb-hd">' + window.tkLabel(k) + '<span class="cnt">' + g.length + '</span></div>';
+    if(!g.length){ html += '<div class="kb-empty">拖任务到这里</div>'; }
     g.forEach(function(t){ html += window.taskNode(t, 0); });
+    html += '</div>';
   });
-  el.innerHTML = html || '<div class="mut">这个分组是空的。</div>';
+  html += '</div>';
+  el.innerHTML = html;
 };
 
 window.renderOrphans = function(list){
@@ -563,7 +574,22 @@ window.adoptNote = function(path){
     .catch(function(){ tkMsg('转换失败，请重试', true); });
 };
 
+window.kbDragging = false;
+window.kbDrag = function(ev, slug){
+  window.kbDragging = true;
+  ev.dataTransfer.setData('text/plain', slug);
+  ev.dataTransfer.effectAllowed = 'move';
+};
+window.kbDragEnd = function(){ setTimeout(function(){ window.kbDragging = false; }, 0); };
+window.kbOver = function(ev){ ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; };
+window.kbDrop = function(ev, status){
+  ev.preventDefault();
+  var slug = ev.dataTransfer.getData('text/plain');
+  if(slug){ setTaskStatus(slug, status); }
+};
+
 window.toggleTask = function(slug){
+  if(window.kbDragging){ return; }
   window.tkOpen[slug] = !window.tkOpen[slug];
   renderTasks();
 };

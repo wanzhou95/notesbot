@@ -46,6 +46,7 @@ CMD_PATTERNS = [
     ("leave", re.compile(r"^\s*(离开|暂停|暂离|退出|先不记了|先不记)\s*$")),
     ("note", re.compile(r"^\s*(记笔记|记下|记录|记)\s*[:：]?\s*(.+)$")),
     ("export", re.compile(r"^\s*(导出)\s*(.*)$")),
+    ("linkpick", re.compile(r"^\s*(挂|挂上)\s*([0-9０-９,，、\s]+)\s*$")),
 ]
 
 QUESTION_HINT = ("怎么", "如何", "为什么", "帮我查", "查一下", "搜", "搜索", "告诉我", "请问", "哪里", "哪个", "什么", "是不是")
@@ -72,6 +73,17 @@ def looks_like_question(t: str) -> bool:
     if any(k in t for k in QUESTION_CONTAINS):
         return True
     return any(t.startswith(k) for k in QUESTION_HINT)
+
+
+# 写笔记后的「相似笔记推荐」候选，供「挂 N」确认（进程内存，重启即清，无副作用）
+_RECENT_LINK = {}
+
+
+def _parse_nums(s):
+    full = "０１２３４５６７８９"
+    half = "0123456789"
+    s = (s or "").translate(str.maketrans(full, half))
+    return [int(x) for x in re.findall(r"\d+", s)]
 
 
 _CN_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -208,6 +220,22 @@ def node_classify(state: S) -> S:
 def node_command(state: S) -> S:
     user, cmd, arg = state["user"], state["cmd"], state["arg"]
     st = storage.load_state(user)
+
+    if cmd == "linkpick":
+        rec = _RECENT_LINK.get(user)
+        if not rec or not rec.get("cands"):
+            return {**state, "reply": "现在没有待关联的笔记。先写一条笔记，系统会推荐相关的。"}
+        nums = _parse_nums(arg)
+        cands = rec["cands"]
+        picked = [cands[i - 1] for i in nums if 1 <= i <= len(cands)]
+        if not picked:
+            opts = "  ".join("%d《%s》" % (i + 1, c["title"]) for i, c in enumerate(cands))
+            return {**state, "reply": "编号不对。可选：%s" % opts}
+        n = skills.link_notes(user, rec["note"], picked)
+        if n:
+            names = "、".join("《%s》" % c["title"] for c in picked)
+            return {**state, "reply": "已关联 %d 篇：%s（Obsidian 星图里会连线）。" % (n, names)}
+        return {**state, "reply": "这些已经关联过了。"}
 
     if cmd == "start":
         name, parent = _split_parent(arg)
@@ -604,11 +632,22 @@ def _write_note(user, text):
 
 
 def node_note(state: S) -> S:
-    cat, path, card = _write_note(state["user"], state["text"])
+    user, text = state["user"], state["text"]
+    cat, path, card = _write_note(user, text)
     reply = "已存到「%s」：%s（说「开始 X」可开启项目记录）" % (cat, path.name)
     if card:
         reply += "\n这条内容命中技能卡《%s》，已挂双链（Obsidian 里会连线）。" \
                  "想按卡里的步骤做，发「用 %s」。" % (card["title"], card["title"])
+    # 相似笔记推荐（语义召回，经「挂 N」确认才写双链，避免乱连）
+    try:
+        rel = str(path.relative_to(storage.user_dir(user))).replace("\\", "/")
+        cands = skills.recommend_notes(user, text, exclude_rel=rel, limit=3)
+    except Exception:
+        cands = []
+    if cands:
+        _RECENT_LINK[user] = {"note": path, "cands": cands}
+        items = "  ".join("%d《%s》" % (i + 1, c["title"]) for i, c in enumerate(cands))
+        reply += "\n可能相关：%s（发「挂 1 2」关联到这篇，不需要就无视）" % items
     return {**state, "reply": reply}
 
 

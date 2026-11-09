@@ -356,6 +356,71 @@ def link_note(user, path, card):
     return True
 
 
+def recommend_notes(user, text, exclude_rel=None, limit=3):
+    """写笔记后推荐语义相似的旧笔记（排除 05/06，它们走 strict 技能卡路径）。
+
+    返回 [{rel, stem, title, distance}]，按相似度降序。stem 是完整文件名（去 .md），
+    title 是去日期前缀的显示名；挂链用 [[stem|title]] 才能精确命中带时间戳的文件名。
+    """
+    try:
+        from rag import search
+        hits = search(user, text, limit=limit * 4)
+    except Exception:
+        return []
+    seen = set()
+    out = []
+    for h in hits:
+        rel = h["path"].replace("\\", "/")
+        parts = rel.split("/")
+        if len(parts) >= 2 and parts[0] in CARD_DIRS:
+            continue
+        if exclude_rel and rel == exclude_rel:
+            continue
+        if rel in seen:
+            continue
+        seen.add(rel)
+        fname = parts[-1]
+        stem = fname[:-3] if fname.endswith(".md") else fname
+        title = re.sub(r"^\d{8}-\d{6}-", "", stem)
+        if not title:
+            continue
+        out.append({"rel": rel, "stem": stem, "title": title,
+                    "distance": round(h.get("distance", 0), 4)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def link_notes(user, note_path, cands):
+    """把选中的相关笔记挂到 note_path 末尾（> 相关：[[完整文件名|标题]]）；已挂则跳过。
+
+    返回本次新挂的条数。
+    """
+    try:
+        text = note_path.read_text(encoding="utf-8")
+    except Exception:
+        return 0
+    added = 0
+    for c in cands:
+        link = "[[%s|%s]]" % (c["stem"], c["title"])
+        if link in text or ("[[%s]]" % c["title"]) in text:
+            continue
+        if re.search(r"(?m)^> 相关：", text):
+            text = re.sub(r"(?m)^(> 相关：.+)$",
+                          lambda m: m.group(1) + "、" + link, text)
+        else:
+            text = text.rstrip() + "\n\n> 相关：%s\n" % link
+        added += 1
+    if added:
+        try:
+            note_path.write_text(text, encoding="utf-8")
+            from rag import index_file
+            index_file(user, str(note_path.relative_to(user_dir(user))).replace("\\", "/"))
+        except Exception:
+            pass
+    return added
+
+
 def rag_fallback(user, text, limit=1):
     """本地没命中时的兜底：向量检索只认 05/06 目录下的结果。"""
     try:
