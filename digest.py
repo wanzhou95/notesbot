@@ -259,23 +259,46 @@ def save_ledger(user, ledger, rows):
 
 # ---------------- 候选池 ----------------
 
-def _task_source(user, slug, t=None):
-    """任务的归纳素材 = 步骤流水 + 行动攻略正文。"""
+def _task_source(user, slug, t=None, all_tasks=None):
+    """根任务的归纳素材 = 自己 + 全部子孙的步骤流水与行动攻略（深度优先）。
+
+    根任务自身的片段保持旧版格式（不加标题前缀），这样没有子任务的老任务
+    素材哈希不变，改版后不会被重复归纳；子任务片段加「## 子任务：名字」前缀。
+    """
     t = t or tasks.read_task(user, slug)
     if not t:
         return ""
-    base = user_dir(user) / "01-Projects" / slug
+    if all_tasks is None:
+        all_tasks = tasks.list_tasks(user)
+    seen = set()
     parts = []
-    flow = base / "步骤记录.md"
-    if flow.exists():
-        parts.append(flow.read_text(encoding="utf-8"))
-    guide = base / "行动攻略.md"
-    if guide.exists():
-        raw, body = tasks.split_fm(guide.read_text(encoding="utf-8"))
-        parts.append(body)
-    if not parts:
-        parts.append("任务：%s\n" % t["name"] + "\n".join(
-            "- %s" % s["text"] for s in t["steps"]))
+
+    def one(node, is_root):
+        base = user_dir(user) / tasks.PROJECTS / node["slug"]
+        seg = []
+        flow = base / tasks.FLOW_NAME
+        if flow.exists():
+            seg.append(flow.read_text(encoding="utf-8"))
+        guide = base / tasks.GUIDE_NAME
+        if guide.exists():
+            _, body = tasks.split_fm(guide.read_text(encoding="utf-8"))
+            seg.append(body)
+        if not seg:
+            seg.append("任务：%s\n" % node["name"] + "\n".join(
+                "- %s" % s["text"] for s in node["steps"]))
+        block = "\n\n".join(seg)
+        parts.append(block if is_root else "## 子任务：%s\n%s" % (node["name"], block))
+
+    def walk(node, is_root):
+        if node["slug"] in seen:
+            return
+        seen.add(node["slug"])
+        one(node, is_root)
+        for x in all_tasks:
+            if x.get("parent") == node["name"]:
+                walk(x, False)
+
+    walk(t, True)
     return "\n\n".join(parts)
 
 
@@ -291,11 +314,16 @@ def _note_flagged(rel_path, text):
 
 
 def candidates(user):
-    """受控候选池：已结束任务 + 标记 沉淀:true 的笔记。"""
+    """受控候选池：只有最顶层的根任务（无 parent）结束后才归纳，素材汇总整棵子树；
+    标记 沉淀:true 的散笔记单独入池。"""
     out = []
     flow_name = getattr(tasks, "FLOW_NAME", "步骤记录.md")
-    for t in tasks.list_tasks(user):
+    all_tasks = tasks.list_tasks(user)
+    for t in all_tasks:
         if t["status"] != "done":
+            continue
+        # 只有根任务（没有 parent）才单独归纳；子任务的内容由根任务汇总进来
+        if t.get("parent"):
             continue
         # 「用 技能卡」开出来的任务：步骤是卡里抄来的，你自己一步没记 →
         # 归纳它只会把旧卡重抄一遍（自我喂养），直接跳过。
@@ -303,7 +331,7 @@ def candidates(user):
             flow = user_dir(user) / tasks.PROJECTS / t["slug"] / flow_name
             if not flow.exists():
                 continue
-        src = _task_source(user, t["slug"], t)
+        src = _task_source(user, t["slug"], t, all_tasks=all_tasks)
         if not src.strip():
             continue
         out.append({
