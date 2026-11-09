@@ -9,6 +9,7 @@ import tasks
 import rag
 import skills
 import video
+import fileops
 from llm import LLMRouter
 
 llm = LLMRouter()
@@ -213,6 +214,18 @@ def node_classify(state: S) -> S:
         series = (m.groupdict().get("series") or "").strip() if cmd == "videomake" else ""
         return {**state, "intent": "cmd", "cmd": cmd, "arg": arg, "series": series}
 
+    # 文件操作预筛（零成本粗召回）：命中才交给模型判，没命中一律走原链路。
+    # 放在 active 判断之前，保证「说句话就照做」在做任务时也生效；
+    # 模型判 none 时 node_fileop 会回落到 _classify_rest，行为与原来完全一致。
+    if fileops.looks_like_op(text):
+        return {**state, "intent": "fileop", "cmd": "", "arg": "", "series": ""}
+
+    return _classify_rest(state)
+
+
+def _classify_rest(state: S) -> S:
+    """去掉命令表与文件操作预筛后的原有分流逻辑，供 node_fileop 判 none 时回落。"""
+    text = state["text"].strip()
     st = storage.load_state(state["user"])
     active = st.get("active")
 
@@ -703,6 +716,28 @@ def node_ask(state: S) -> S:
     return {**state, "reply": "这句我不确定是记笔记还是要开项目：\n1️⃣ 回复「开始 项目名」开启项目记录\n2️⃣ 直接再说一遍，我就当普通笔记存起来"}
 
 
+def node_fileop(state: S) -> S:
+    """自然语言文件操作。模型判 none → 完整回落到原来的分类/步骤/问答链路。"""
+    kind, msg = fileops.run(state["user"], state["text"])
+    if kind == "none":
+        rest = _classify_rest(state)
+        it = rest["intent"]
+        if it == "step":
+            return node_step(rest)
+        if it == "qa":
+            return node_qa(rest)
+        return node_note(rest)
+    if kind == "err":
+        # 判定是操作但被拒：原话仍按笔记存下，保证用户内容零丢失
+        try:
+            cat, path, _ = _write_note(state["user"], state["text"])
+            msg += "\n（原话已按普通笔记存到「%s」：%s）" % (cat, path.name)
+        except Exception:
+            pass
+        return {**state, "reply": msg}
+    return {**state, "reply": msg}
+
+
 def build_graph():
     g = StateGraph(S)
     g.add_node("classify", node_classify)
@@ -711,10 +746,12 @@ def build_graph():
     g.add_node("note", node_note)
     g.add_node("qa", node_qa)
     g.add_node("ask", node_ask)
+    g.add_node("fileop", node_fileop)
     g.set_entry_point("classify")
     g.add_conditional_edges("classify", lambda s: s["intent"], {
         "cmd": "cmd", "step": "step", "note": "note", "qa": "qa", "ask": "ask",
+        "fileop": "fileop",
     })
-    for n in ("cmd", "step", "note", "qa", "ask"):
+    for n in ("cmd", "step", "note", "qa", "ask", "fileop"):
         g.add_edge(n, END)
     return g.compile()
