@@ -4,7 +4,7 @@ import shutil
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, Request, HTTPException, UploadFile, File
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
 import config
@@ -577,6 +577,7 @@ def api_video_url(request: Request, body: dict):
     u = require(request)
     import video
     url = (body.get("url") or "").strip()
+    series = (body.get("series") or "").strip()
     if not video.is_url(url):
         raise HTTPException(400, "请粘贴完整的视频链接（http/https 开头）")
     if not video.ffmpeg_exe():
@@ -585,7 +586,7 @@ def api_video_url(request: Request, body: dict):
     if old:
         return {"ok": True, "done": True, "note": old["rel"], "title": old["title"],
                 "msg": "这个链接已经总结过了"}
-    jid = video.start_job(u, url=url)
+    jid = video.start_job(u, url=url, series=series)
     return {"ok": True, "id": jid}
 
 
@@ -593,14 +594,14 @@ VIDEO_MAX_BYTES = 2 * 1024 * 1024 * 1024      # 2GB
 
 
 @app.post("/api/video/upload")
-def api_video_upload(request: Request, file: UploadFile = File(...)):
+def api_video_upload(request: Request, file: UploadFile = File(...), series: str = Form("")):
     """本地视频/音频上传：流式落盘（不走 base64，大文件才扛得住）。"""
     u = require(request)
     import video
     name = os.path.basename(file.filename or "video.mp4")
     if not video.is_media(name):
         raise HTTPException(400, "只支持视频/音频文件（mp4/mkv/mov/flv/webm/mp3/m4a/wav…）")
-    jid = video.create_job(u, name)
+    jid = video.create_job(u, name, series=(series or "").strip())
     work = video.job_workdir(jid)
     work.mkdir(parents=True, exist_ok=True)
     dst = work / ("src." + video.media_ext(name))

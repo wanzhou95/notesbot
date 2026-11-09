@@ -621,8 +621,11 @@ def summarize(pairs):
 
 # ---------------- 落盘 / 读回 ----------------
 
-def save_note(user, meta, pairs, summary, method):
+def save_note(user, meta, pairs, summary, method, series=""):
     d = user_dir(user) / VIDEO_DIR
+    sname = _safe_name(series, maxlen=40) if (series or "").strip() else ""
+    if sname:
+        d = d / sname
     d.mkdir(parents=True, exist_ok=True)
     title = _safe_name(meta.get("title"))
     path = d / ("%s.md" % title)
@@ -719,9 +722,13 @@ def list_notes(user, limit=50):
     if not d.is_dir():
         return []
     out = []
-    for p in sorted(d.glob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
-        item = parse_note(p, "%s/%s" % (VIDEO_DIR, p.name))
+    for p in sorted(d.rglob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
+        rel_dir = p.parent.relative_to(d)
+        series = "" if str(rel_dir) == "." else rel_dir.as_posix()
+        rel = "%s/%s" % (VIDEO_DIR, p.relative_to(d).as_posix())
+        item = parse_note(p, rel)
         if item:
+            item["series"] = series
             out.append(item)
     return out
 
@@ -762,7 +769,7 @@ def get_job(jid):
         return dict(j) if j else None
 
 
-def create_job(user, title_hint=""):
+def create_job(user, title_hint="", series=""):
     """只占位不启动：上传大文件时先把 job 建好，落盘完再 launch。"""
     jid = uuid.uuid4().hex[:12]
     with _JOBS_LOCK:
@@ -771,7 +778,7 @@ def create_job(user, title_hint=""):
                 JOBS.pop(k, None)
         JOBS[jid] = {"id": jid, "user": user, "stage": "准备中", "step": 0, "total": 0,
                      "done": False, "err": None, "note": None, "title": title_hint or "",
-                     "method": "", "duration": "", "elapsed": 0,
+                     "series": series or "", "method": "", "duration": "", "elapsed": 0,
                      "t": datetime.now().timestamp()}
     return jid
 
@@ -781,8 +788,8 @@ def launch(jid, url=None, file_path=None):
     return jid
 
 
-def start_job(user, url=None, file_path=None, title_hint=None):
-    jid = create_job(user, title_hint or "")
+def start_job(user, url=None, file_path=None, title_hint=None, series=""):
+    jid = create_job(user, title_hint or "", series or "")
     return launch(jid, url, file_path)
 
 
@@ -863,7 +870,7 @@ def _run(jid, url, file_path):
             _set(jid, stage="生成速览")
             summary = summarize(pairs)
             _set(jid, stage="写入笔记")
-            path = save_note(user, meta, pairs, summary, method)
+            path = save_note(user, meta, pairs, summary, method, job.get("series") or "")
             rel = str(path.relative_to(user_dir(user))).replace("\\", "/")
             _set(jid, stage="完成", done=True, note=rel, method=method,
                  title=meta["title"], duration=_ts(meta.get("duration") or 0),

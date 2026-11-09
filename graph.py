@@ -33,7 +33,7 @@ CMD_PATTERNS = [
     ("reviewredo", re.compile(r"^\s*(重做|重新归纳)\s*[:：]?\s*(?P<arg>.+)$")),
     # 视频字幕：带动词的链接、裸的视频站链接、以及列表/查看
     ("videolist", re.compile(r"^\s*(视频列表|字幕列表|有哪些视频|视频笔记)\s*$")),
-    ("videomake", re.compile(r"^\s*(?:总结|转写|提取字幕|看下|看看)\s*(?P<url>https?://\S+)\s*$")),
+    ("videomake", re.compile(r"^\s*(?:总结|转写|提取字幕|看下|看看)\s*(?P<url>https?://\S+)(?:\s*(?:存到|归到|归入|放到|存入)\s*(?P<series>.+?))?\s*$")),
     ("videomake", re.compile(r"^\s*(?P<arg>https?://\S+)\s*$")),
     ("videoshow", re.compile(r"^\s*(?:看视频|视频笔记|视频)\s*[:：]?\s*(?!https?://)(?P<arg>.+)$")),
     # 「用 X / 按 X 做 / 技能 X」——只有 X 能对上技能卡时才算命令（见 node_classify 的二次校验）
@@ -123,6 +123,15 @@ def _looks_like_share(text):
     return ""
 
 
+_SERIES_RE = re.compile(r"(?:存到|归到|归入|放到|存入)\s*(.+?)\s*$")
+
+
+def _series_of(text):
+    """从整句里抠「存到/归到 … 系列名」，没有就返回空串。"""
+    m = _SERIES_RE.search(text or "")
+    return (m.group(1).strip() if m else "")
+
+
 def _split_parent(arg):
     """「学调色 属于 剪辑视频学习」→ (学调色, 剪辑视频学习)"""
     m = re.match(r"^(.+?)\s*(?:属于|上级是|归到|挂在|挂到)\s*(.+)$", arg.strip())
@@ -187,7 +196,8 @@ def node_classify(state: S) -> S:
     # 先认「App 复制的分享文案」：链接和口令粘成一句，下面按固定句式写的规则接不住
     share = _looks_like_share(text)
     if share:
-        return {**state, "intent": "cmd", "cmd": "videomake", "arg": share}
+        return {**state, "intent": "cmd", "cmd": "videomake", "arg": share,
+                "series": _series_of(text)}
     for cmd, pat in CMD_PATTERNS:
         m = pat.match(text)
         if not m:
@@ -200,7 +210,8 @@ def node_classify(state: S) -> S:
         # 裸链接只有落在视频站上才当视频处理；其它链接照旧存成笔记/资源
         if cmd == "videomake" and not m.groupdict().get("url") and not video.is_video_url(arg):
             continue
-        return {**state, "intent": "cmd", "cmd": cmd, "arg": arg}
+        series = (m.groupdict().get("series") or "").strip() if cmd == "videomake" else ""
+        return {**state, "intent": "cmd", "cmd": cmd, "arg": arg, "series": series}
 
     st = storage.load_state(state["user"])
     active = st.get("active")
@@ -552,6 +563,7 @@ def node_command(state: S) -> S:
 
     if cmd == "videomake":
         url = arg
+        series = state.get("series", "").strip()
         if not video.ffmpeg_exe():
             return {**state, "reply": "服务器没装 ffmpeg，转写跑不起来（装一下 imageio-ffmpeg 就好）。"}
         if not video.is_url(url):
@@ -560,12 +572,14 @@ def node_command(state: S) -> S:
         if old:
             return {**state, "reply": "这个链接已经总结过了：《%s》（%s）。\n发「看视频 %s」看要点和章节。"
                                       % (old["title"], old["duration"], old["title"])}
-        video.start_job(user, url=url)
+        dest = "%s/%s/" % (video.VIDEO_DIR, series) if series else "%s/" % video.VIDEO_DIR
+        video.start_job(user, url=url, series=series)
         return {**state, "reply": (
-            "已开始处理这个视频。\n"
+            "已开始处理这个视频%s。\n"
             "先看平台有没有现成字幕（有就 0 成本）；没有就下音频、切段转写（约 0.015 元/分钟）。\n"
-            "跑完存到 %s/，**不进检索**，不会冲淡搜索。\n"
-            "之后发「视频列表」看结果，或开网页「视频」页看章节和完整字幕。" % video.VIDEO_DIR)}
+            "跑完存到 %s，**不进检索**，不会冲淡搜索。\n"
+            "之后发「视频列表」看结果，或开网页「视频」页看章节和完整字幕。"
+            % (("，归入系列「%s」" % series) if series else "", dest))}
 
     if cmd == "note":
         cat, path, card = _write_note(user, arg)

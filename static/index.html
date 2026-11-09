@@ -231,6 +231,9 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       <input id="vidurl" class="inp" style="flex:1" placeholder="https://www.bilibili.com/video/BV..." onkeydown="if(event.key==='Enter')videoFromUrl()">
       <button class="btn" style="width:auto" onclick="videoFromUrl()">解析</button>
     </div>
+    <div class="row" style="margin-top:8px">
+      <input id="vidseries" class="inp" style="flex:1;font-size:14px" placeholder="可选：归入某个系列（如「AI学习」），留空存到顶层">
+    </div>
     <div class="row" style="margin-top:8px;align-items:center">
       <button class="btn ghost" style="width:auto" onclick="pickVideo()">📹 上传本地视频</button>
       <span class="mut" id="vidhint">单文件 ≤ 2GB</span>
@@ -239,7 +242,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
     <div id="vidjob" class="msg" style="display:none"></div>
   </div>
   <div class="card">
-    <div class="mut">已生成的视频速览（点开可看章节、要点和完整字幕）</div>
+    <div class="mut">已生成的视频速览（按系列分组，点开可看章节、要点和完整字幕）</div>
     <div id="vidlist"></div>
   </div>
 </div>
@@ -854,13 +857,15 @@ window.videoFromUrl = function(){
   var el = document.getElementById('vidurl');
   var url = (el.value || '').trim();
   if(!url){ return; }
+  var series = (document.getElementById('vidseries').value || '').trim();
   vidMsg('正在解析链接…');
   api('/api/video/url', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({url: url})})
+    body: JSON.stringify({url: url, series: series})})
     .then(function(d){
       if(d.ok === false || d.detail){ vidMsg(d.detail || d.err || '解析失败', true); return; }
       if(d.done){ vidMsg('这个链接已经总结过了：《' + d.title + '》，下面列表里能看到。'); loadVideos(); return; }
       el.value = '';
+      document.getElementById('vidseries').value = '';
       watchVideo(d.id);
     })
     .catch(function(){ vidMsg('解析失败，请重试', true); });
@@ -877,6 +882,8 @@ window.onVideoFile = function(){
   vidMsg('上传中 0%', false, 0);
   var fd = new FormData();
   fd.append('file', f);
+  var series = (document.getElementById('vidseries').value || '').trim();
+  if(series){ fd.append('series', series); }
   var xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/video/upload');
   xhr.upload.onprogress = function(e){
@@ -891,6 +898,7 @@ window.onVideoFile = function(){
     var d = {};
     try{ d = JSON.parse(xhr.responseText); }catch(e){}
     if(!d.id){ vidMsg(d.detail || d.err || '上传失败', true); return; }
+    document.getElementById('vidseries').value = '';
     watchVideo(d.id);
   };
   xhr.onerror = function(){ vidMsg('上传失败，请重试', true); };
@@ -938,7 +946,7 @@ window.renderVideos = function(){
     el.innerHTML = '<div class="mut">还没有视频速览。粘个链接或传个文件试试，短视频几十秒就好。</div>';
     return;
   }
-  el.innerHTML = arr.map(function(v){
+  function card(v){
     var secs = (v.sections || []);
     var secHtml = secs.slice(0, 6).map(function(s){
       return '<div class="vt-sec"><span class="vt-t">' + escapeHtml(s.t) + '</span><span>'
@@ -959,7 +967,25 @@ window.renderVideos = function(){
       + (v.source ? '<a class="exp" href="' + escapeHtml(v.source) + '" target="_blank" rel="noopener">原视频</a>' : '')
       + '<button data-act="open" data-rel="' + escapeHtml(v.rel) + '">完整字幕</button></div>'
       + '</div>';
-  }).join('');
+  }
+  var groups = {}, order = [];
+  arr.forEach(function(v){
+    var s = v.series || '';
+    if(!(s in groups)){ groups[s] = []; order.push(s); }
+    groups[s].push(v);
+  });
+  order.sort(function(a, b){
+    if(a === ''){ return -1; }
+    if(b === ''){ return 1; }
+    return a < b ? -1 : 1;
+  });
+  var html = '';
+  order.forEach(function(s){
+    if(s){ html += '<div class="tk-group">📁 ' + escapeHtml(s)
+                 + ' <span class="mut">' + groups[s].length + ' 个</span></div>'; }
+    html += groups[s].map(card).join('');
+  });
+  el.innerHTML = html;
   el.querySelectorAll('[data-act="open"]').forEach(function(b){
     b.onclick = function(){ openNote(this.getAttribute('data-rel')); };
   });
