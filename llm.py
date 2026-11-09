@@ -28,11 +28,28 @@ def load_model_settings():
     return {
         "deepseek": bool(data.get("deepseek", True)),
         "premium": dict(data.get("premium") or {}),
+        "digest_models": (data.get("digest_models") or "").strip(),
     }
 
 
 def save_model_settings(settings):
     SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# 定时归纳的默认模型层级（设置页可覆盖，逗号分隔、按优先级从高到低降级）
+DIGEST_MODELS_DEFAULT = "deepseek-v4-pro,glm-5.3-flash,glm-4.7-flash"
+
+
+def parse_digest_models(s):
+    """解析逗号分隔的模型名 → [(provider, model), ...]，provider 按前缀猜 ds/glm。"""
+    out = []
+    for m in (s or "").split(","):
+        m = m.strip()
+        if not m:
+            continue
+        prov = "ds" if m.startswith("deepseek") else "glm"
+        out.append((prov, m))
+    return out
 
 
 class LLMRouter:
@@ -104,6 +121,30 @@ class LLMRouter:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
         return self.chat_messages(messages, tier=tier, max_tokens=max_tokens)
+
+    def chat_ordered(self, prompt, order, max_tokens=4000, system=None):
+        """按明确顺序尝试 order=[(provider, model), ...]，provider ∈ {ds, glm}。"""
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        last_err = None
+        for prov, model in order:
+            try:
+                if prov == "ds":
+                    if not self.ds_key:
+                        continue
+                    out = self._call(self.ds_url, self.ds_key, model, messages, max_tokens)
+                else:
+                    if not self.glm_key:
+                        continue
+                    out = self._call(self.glm_url, self.glm_key, model, messages, max_tokens, glm=True)
+                log_usage(prov, model, "digest")
+                return out
+            except Exception as e:
+                last_err = e
+                continue
+        return "[模型调用失败] %s" % last_err
 
     def vision(self, image_data_url, prompt, max_tokens=1500):
         """视觉识别（智谱免费视觉模型），image_data_url 为 base64 data URL。"""

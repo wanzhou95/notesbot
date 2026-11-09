@@ -274,6 +274,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       <div id="pmSwitches"></div>
       <div class="mut" style="margin-top:6px">关闭后问AI 页不再出现该勾选框，后端同时拦截</div>
     </div>
+    <div style="margin:14px 0;padding:12px;border:1px solid #e5e7eb;border-radius:8px">
+      <div style="font-weight:bold;margin-bottom:8px">定时归纳模型（按顺序降级）</div>
+      <input id="digest-models" class="inp" style="font-size:14px" placeholder="deepseek-v4-pro,glm-5.3-flash,glm-4.7-flash">
+      <div class="mut" style="margin-top:6px">逗号分隔、优先级从高到低，失败自动降到下一个。留空 = 默认：deepseek-v4-pro,glm-5.3-flash,glm-4.7-flash</div>
+    </div>
     <div class="row">
       <button class="btn" style="width:auto" onclick="saveSettings()">保存设置</button>
       <span id="setmsg" class="mut"></span>
@@ -1072,6 +1077,7 @@ window.loadSettings = function(){
     .then(function(d){
       window.modelConf = d;
       document.getElementById('sw-deepseek').checked = d.deepseek;
+      document.getElementById('digest-models').value = d.digest_models || '';
       var box = document.getElementById('pmSwitches');
       box.innerHTML = '';
       Object.keys(d.models).forEach(function(k){
@@ -1132,7 +1138,7 @@ function renderPmRow(){
 window.saveSettings = function(){
   var premium = {};
   document.querySelectorAll('#pmSwitches .pmsw').forEach(function(c){ premium[c.dataset.m] = c.checked; });
-  api('/api/model-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deepseek: document.getElementById('sw-deepseek').checked, premium: premium})})
+  api('/api/model-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deepseek: document.getElementById('sw-deepseek').checked, premium: premium, digest_models: document.getElementById('digest-models').value.trim()})})
     .then(function(d){
       if(d.ok){
         document.getElementById('setmsg').textContent = '已保存，立即生效 ✓';

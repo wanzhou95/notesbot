@@ -710,7 +710,8 @@ def get_model_settings(request: Request):
     s = load_model_settings()
     # premium 里没记录的模型默认开
     premium = {k: bool(s["premium"].get(k, True)) for k in PREMIUM_MODELS}
-    return {"deepseek": s["deepseek"], "premium": premium, "models": PREMIUM_MODELS}
+    return {"deepseek": s["deepseek"], "premium": premium, "models": PREMIUM_MODELS,
+            "digest_models": s.get("digest_models", "")}
 
 
 @app.post("/api/model-settings")
@@ -721,6 +722,7 @@ def set_model_settings(request: Request, body: dict):
     s = {
         "deepseek": bool(body.get("deepseek", True)),
         "premium": {k: bool(v) for k, v in (body.get("premium") or {}).items() if k in PREMIUM_MODELS},
+        "digest_models": (body.get("digest_models") or "").strip(),
     }
     save_model_settings(s)
     return {"ok": True}

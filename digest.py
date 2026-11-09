@@ -38,6 +38,16 @@ def get_llm():
         _llm = LLMRouter()
     return _llm
 
+
+def _digest_chat(prompt):
+    """定时归纳用独立模型层级：默认 deepseek-v4-pro → glm-5.3-flash → glm-4.7-flash，
+    设置页的 digest_models 可覆盖。"""
+    from llm import load_model_settings, parse_digest_models, DIGEST_MODELS_DEFAULT
+    s = load_model_settings()
+    raw = s.get("digest_models") or DIGEST_MODELS_DEFAULT
+    order = parse_digest_models(raw) or parse_digest_models(DIGEST_MODELS_DEFAULT)
+    return get_llm().chat_ordered(prompt, order, max_tokens=4000)
+
 LEDGER_REL = "_index/归纳台账.md"
 DRAFT = ENV.get("DIGEST_DRAFT", "1") == "1"
 MAX_PER_RUN = int(ENV.get("DIGEST_MAX", "3") or 3)
@@ -390,7 +400,7 @@ def _gen(title, text, kind, source_name, user=None):
             rules = ""        # 台账坏了不能拖垮归纳，静默降级
     prompt = "%s%s\n\n卡片标题：%s\n来源：%s\n\n材料：\n%s" % (
         tpl, rules, title, source_name, text[-6000:])
-    raw = get_llm().chat(prompt, tier="main", max_tokens=4000)
+    raw = _digest_chat(prompt)
     if (raw or "").startswith("[模型调用失败]"):
         raise RuntimeError((raw or "")[:80])
     return _extract(raw, title, kind, source_name)
