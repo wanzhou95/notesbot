@@ -40,13 +40,12 @@ def get_llm():
 
 
 def _digest_chat(prompt):
-    """定时归纳用独立模型层级：默认 deepseek-v4-pro → glm-5.3-flash → glm-4.7-flash，
-    设置页的 digest_models 可覆盖。"""
-    from llm import load_model_settings, parse_digest_models, DIGEST_MODELS_DEFAULT
-    s = load_model_settings()
-    raw = s.get("digest_models") or DIGEST_MODELS_DEFAULT
-    order = parse_digest_models(raw) or parse_digest_models(DIGEST_MODELS_DEFAULT)
-    return get_llm().chat_ordered(prompt, order, max_tokens=4000)
+    """定时归纳用独立模型层级：勾选 deepseek-v4-pro / glm-5.3-flash（固定顺序），
+    glm-4.7-flash 始终兜底。"""
+    from llm import digest_model_order
+    llm = get_llm()
+    order = digest_model_order(llm)
+    return llm.chat_ordered(prompt, order, max_tokens=4000)
 
 LEDGER_REL = "_index/归纳台账.md"
 DRAFT = ENV.get("DIGEST_DRAFT", "1") == "1"

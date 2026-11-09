@@ -275,9 +275,10 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       <div class="mut" style="margin-top:6px">关闭后问AI 页不再出现该勾选框，后端同时拦截</div>
     </div>
     <div style="margin:14px 0;padding:12px;border:1px solid #e5e7eb;border-radius:8px">
-      <div style="font-weight:bold;margin-bottom:8px">定时归纳模型（按顺序降级）</div>
-      <input id="digest-models" class="inp" style="font-size:14px" placeholder="deepseek-v4-pro,glm-5.3-flash,glm-4.7-flash">
-      <div class="mut" style="margin-top:6px">逗号分隔、优先级从高到低，失败自动降到下一个。留空 = 默认：deepseek-v4-pro,glm-5.3-flash,glm-4.7-flash</div>
+      <div style="font-weight:bold;margin-bottom:8px">定时归纳模型</div>
+      <label style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="digest-ds"> deepseek-v4-pro <span class="mut">主力（付费）</span></label>
+      <label style="display:flex;align-items:center;gap:8px;margin:6px 0"><input type="checkbox" id="digest-glm53"> glm-5.3-flash <span class="mut">增强（近免费）</span></label>
+      <div class="mut" style="margin-top:6px">勾选的模型按上面的固定顺序调用，失败自动降级；glm-4.7-flash 始终作为最后兜底，不在这里设置。</div>
     </div>
     <div class="row">
       <button class="btn" style="width:auto" onclick="saveSettings()">保存设置</button>
@@ -1077,7 +1078,8 @@ window.loadSettings = function(){
     .then(function(d){
       window.modelConf = d;
       document.getElementById('sw-deepseek').checked = d.deepseek;
-      document.getElementById('digest-models').value = d.digest_models || '';
+      document.getElementById('digest-ds').checked = d.digest_ds;
+      document.getElementById('digest-glm53').checked = d.digest_glm53;
       var box = document.getElementById('pmSwitches');
       box.innerHTML = '';
       Object.keys(d.models).forEach(function(k){
@@ -1138,12 +1140,14 @@ function renderPmRow(){
 window.saveSettings = function(){
   var premium = {};
   document.querySelectorAll('#pmSwitches .pmsw').forEach(function(c){ premium[c.dataset.m] = c.checked; });
-  api('/api/model-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deepseek: document.getElementById('sw-deepseek').checked, premium: premium, digest_models: document.getElementById('digest-models').value.trim()})})
+  api('/api/model-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deepseek: document.getElementById('sw-deepseek').checked, premium: premium, digest_ds: document.getElementById('digest-ds').checked, digest_glm53: document.getElementById('digest-glm53').checked})})
     .then(function(d){
       if(d.ok){
         document.getElementById('setmsg').textContent = '已保存，立即生效 ✓';
         if(window.modelConf){
           window.modelConf.deepseek = document.getElementById('sw-deepseek').checked;
+          window.modelConf.digest_ds = document.getElementById('digest-ds').checked;
+          window.modelConf.digest_glm53 = document.getElementById('digest-glm53').checked;
           Object.keys(premium).forEach(function(k){ window.modelConf.premium[k] = premium[k]; });
           renderPmRow();
         }

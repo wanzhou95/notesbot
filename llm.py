@@ -28,7 +28,9 @@ def load_model_settings():
     return {
         "deepseek": bool(data.get("deepseek", True)),
         "premium": dict(data.get("premium") or {}),
-        "digest_models": (data.get("digest_models") or "").strip(),
+        # 定时归纳的两个勾选模型（默认都开）；glm-4.7-flash 始终兜底，不落配置
+        "digest_ds": bool(data.get("digest_ds", True)),
+        "digest_glm53": bool(data.get("digest_glm53", True)),
     }
 
 
@@ -36,20 +38,18 @@ def save_model_settings(settings):
     SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-# 定时归纳的默认模型层级（设置页可覆盖，逗号分隔、按优先级从高到低降级）
-DIGEST_MODELS_DEFAULT = "deepseek-v4-pro,glm-5.3-flash,glm-4.7-flash"
-
-
-def parse_digest_models(s):
-    """解析逗号分隔的模型名 → [(provider, model), ...]，provider 按前缀猜 ds/glm。"""
-    out = []
-    for m in (s or "").split(","):
-        m = m.strip()
-        if not m:
-            continue
-        prov = "ds" if m.startswith("deepseek") else "glm"
-        out.append((prov, m))
-    return out
+def digest_model_order(router):
+    """定时归纳的调用顺序：勾选的模型按固定顺序（deepseek-v4-pro → glm-5.3-flash），
+    最后始终以 glm-4.7-flash（MODEL_FALLBACK 首个）兜底，不随勾选变化。"""
+    s = load_model_settings()
+    order = []
+    if s["digest_ds"]:
+        order.append(("ds", router.main_model))            # 默认 deepseek-v4-pro
+    if s["digest_glm53"]:
+        order.append(("glm", "glm-5.3-flash"))
+    if router.glm_models:
+        order.append(("glm", router.glm_models[0]))        # glm-4.7-flash 兜底
+    return order
 
 
 class LLMRouter:
