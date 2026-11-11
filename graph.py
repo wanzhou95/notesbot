@@ -445,9 +445,10 @@ def node_command(state: S) -> S:
         if not slug:
             return {**state, "reply": "先切到一个任务，再说「上级 父任务名」。"}
         parent = arg.strip()
+        # 先取名字：set_parent 成功后目录可能已被搬进父目录，旧 slug 会失效
+        cur_name = (tasks.read_task(user, slug) or {}).get("name", slug)
         if tasks.set_parent(user, slug, parent):
-            msg = "已把《%s》的上级设为《%s》。" % (
-                (tasks.read_task(user, slug) or {}).get("name", slug), parent)
+            msg = "已把《%s》的上级设为《%s》。" % (cur_name, parent)
             if _parent_missing(user, parent):
                 msg += "\n" + PARENT_MISSING_HINT % (parent, parent)
             else:

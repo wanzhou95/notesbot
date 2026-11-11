@@ -254,12 +254,24 @@ def read_task(user, slug):
 
 
 def list_tasks(user):
+    """遍历 01-Projects 下所有任务目录，含嵌套在父目录里的子任务。
+
+    返回的 slug 是相对 01-Projects 的路径（如 `2026-11-11-父/2026-11-11-子`），
+    所有按 `projects_root(user) / slug` 取目录的地方都天然兼容。
+    """
     out = []
     root = projects_root(user)
-    for base in sorted(root.iterdir()) if root.exists() else []:
-        if not base.is_dir() or base.name.startswith((".", "_")):
+    if not root.exists():
+        return out
+    for base in sorted(root.rglob("*")):
+        if not base.is_dir():
             continue
-        t = read_task(user, base.name)
+        parts = base.relative_to(root).parts
+        if any(p.startswith((".", "_")) for p in parts):
+            continue
+        if not _main_file(base):
+            continue
+        t = read_task(user, "/".join(parts))
         if t:
             out.append(t)
     return out
@@ -356,7 +368,8 @@ def find_task(user, query, exact=False):
             return t["slug"]
     if exact:
         return None
-    cand = [t for t in tasks if q in t["name"] or q in t["slug"]]
+    # slug 含父路径时只用末段做模糊匹配，避免查父任务名把整棵子树都捞进来
+    cand = [t for t in tasks if q in t["name"] or q in t["slug"].split("/")[-1]]
     if cand:
         # 名字越短越可能是精确目标
         cand.sort(key=lambda t: len(t["name"]))
@@ -395,12 +408,22 @@ def create_task(user, name, status="todo", parent=None, related=None, source_ski
 
     ts = now()
     base_name = "%s-%s" % (ts.strftime("%Y-%m-%d"), slugify(name, 30))
-    base = projects_root(user) / base_name
+    root = projects_root(user)
+    # 有父任务时，子任务目录直接建在父目录里（Obsidian 文件树可折叠）。
+    # 父不存在 / 自己就是父 / 目标已存在时退回顶层，绝不硬搬，保证 create 一定成功。
+    parent_dir = root
+    pkey = re.sub(r"[\[\]《》「」\"']", "", parent or "").strip()
+    if pkey:
+        pslug = find_task(user, pkey, exact=True)
+        if pslug and (root / pslug).is_dir():
+            parent_dir = root / pslug
+    base = parent_dir / base_name
     i = 2
     while base.exists():
-        base = projects_root(user) / ("%s-%d" % (base_name, i))
+        base = parent_dir / ("%s-%d" % (base_name, i))
         i += 1
     base.mkdir(parents=True, exist_ok=True)
+    slug = "/".join(base.relative_to(root).parts)
 
     parent_cell = "[[%s]]" % parent if parent else ""
     rel_cell = ", ".join('"[[%s]]"' % r for r in (related or []))
@@ -419,7 +442,7 @@ def create_task(user, name, status="todo", parent=None, related=None, source_ski
     _write_raw(main, fm, body)
     _touch_index(main)
     render_index(user)
-    return base.name, True
+    return slug, True
 
 
 def _insert_under(body, section, line):
@@ -553,9 +576,60 @@ def set_status(user, slug, status):
     return True
 
 
+def _nest_under_parent(user, slug, parent_name):
+    """把任务目录物理移进父任务目录，返回新 slug；任何异常都返回原 slug。
+
+    这样「上级 X」「开始 X 属于 Y」事后改层级，也能和「加子任务」一样在
+    Obsidian 文件树里呈现嵌套，不留下「只有新建才嵌套」的割裂。
+    """
+    root = projects_root(user)
+    src = root / slug
+    if not src.is_dir():
+        return slug
+    pkey = re.sub(r"[\[\]《》「」\"']", "", parent_name or "").strip()
+    pslug = find_task(user, pkey, exact=True) if pkey else None
+    if not pslug or not (root / pslug).is_dir():
+        return slug
+    # 防成环：父不能是自己或自己的后代
+    if pslug == slug or pslug.startswith(slug.rstrip("/") + "/"):
+        return slug
+    # 已经在这个父目录下 / 目标同名已存在 → 不动，避免覆盖
+    if "/" in slug and slug.rsplit("/", 1)[0] == pslug:
+        return slug
+    dst = root / pslug / src.name
+    if dst.exists():
+        return slug
+    try:
+        src.rename(dst)
+    except Exception:
+        return slug
+    new_slug = "%s/%s" % (pslug, src.name)
+    # active 指向被搬走的任务时跟着改，否则「当前」会失效
+    try:
+        import storage
+        st = storage.load_state(user)
+        if st.get("active") == slug:
+            st["active"] = new_slug
+            storage.save_state(user, st)
+    except Exception:
+        pass
+    # 全量重建索引：旧 rel 会在 clear_user 时清掉，新 rel 重新入库
+    try:
+        from rag import reindex_user
+        reindex_user(user)
+    except Exception:
+        pass
+    return new_slug
+
+
 def set_parent(user, slug, parent_name):
     t = read_task(user, slug)
     if not t or not parent_name or parent_name == t["name"]:
+        return False
+    # 禁止挂到自己的后代下面（否则 parent 成环，总览/迁移都会出事）
+    pkey = re.sub(r"[\[\]《》「」\"']", "", parent_name).strip()
+    pslug = find_task(user, pkey, exact=True) if pkey else None
+    if pslug and (pslug == slug or pslug.startswith(slug.rstrip("/") + "/")):
         return False
     main = user_dir(user) / t["path"]
     raw_text = main.read_text(encoding="utf-8")
@@ -564,8 +638,9 @@ def set_parent(user, slug, parent_name):
     fm_raw = _fm_set(fm_raw, "updated", _ts())
     _write_raw(main, fm_raw, body)
     _touch_index(main)
+    new_slug = _nest_under_parent(user, slug, parent_name)
     render_index(user)
-    return True
+    return new_slug
 
 
 def add_related(user, slug, names):
@@ -735,11 +810,10 @@ def migrate(user):
     root = projects_root(user)
     if not root.exists():
         return report
-    for base in sorted(root.iterdir()):
-        if not base.is_dir() or base.name.startswith((".", "_")):
-            continue
-        old = base / "_project.md"
-        if not old.exists():
+    for old in sorted(root.rglob("_project.md")):
+        base = old.parent
+        parts = base.relative_to(root).parts
+        if any(p.startswith((".", "_")) for p in parts):
             continue
         try:
             text = old.read_text(encoding="utf-8")

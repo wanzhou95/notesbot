@@ -423,7 +423,7 @@ def api_task_search(request: Request, q: str = ""):
     ql = (q or "").strip().lower()
     out = []
     for t in tasks.list_tasks(u):
-        hay = (t["name"] + " " + t["slug"]).lower()
+        hay = (t["name"] + " " + t["slug"].split("/")[-1]).lower()
         if ql and ql not in hay:
             continue
         out.append({
