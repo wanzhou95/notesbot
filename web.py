@@ -696,6 +696,24 @@ def ask(request: Request, body: dict):
     return {"reply": ans}
 
 
+@app.post("/api/save-page")
+def api_save_page(request: Request, body: dict):
+    """把一次问答存成知识页草稿（06-Wiki/_待审/），带来源可回溯。"""
+    u = require(request)
+    q = (body.get("question") or "").strip()
+    ans = (body.get("answer") or "").strip()
+    if not q or not ans:
+        raise HTTPException(400, "问题和答案不能为空")
+    title = (body.get("title") or "").strip()
+    sources = [str(s) for s in (body.get("sources") or []) if str(s).strip()]
+    import digest
+    import storage
+    path = digest.save_qa_page(u, q, ans, sources, title)
+    rel = str(path.relative_to(storage.user_dir(u))).replace("\\", "/")
+    return {"ok": True, "path": rel,
+            "msg": "已存为知识页草稿，去「技能」页待审区通过后转正。"}
+
+
 # ===== 模型开关（设置页）=====
 PREMIUM_MODELS = {  # 展示名：给前端渲染开关列表
     "glm-5.3-flash": ("GLM-5.3-Flash", "推荐·近免费（0.4/1.4元每百万tokens 五折）"),

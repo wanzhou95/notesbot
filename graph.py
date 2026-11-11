@@ -50,6 +50,7 @@ CMD_PATTERNS = [
     ("note", re.compile(r"^\s*(记笔记|记下|记录|记)\s*[:：]?\s*(.+)$")),
     ("export", re.compile(r"^\s*(导出)\s*(.*)$")),
     ("linkpick", re.compile(r"^\s*(挂|挂上)\s*([0-9０-９,，、\s]+)\s*$")),
+    ("saveqa", re.compile(r"^\s*(存为页|存这条|存为知识页|保存答案|存成页)\s*[:：]?\s*(.*)$")),
 ]
 
 QUESTION_HINT = ("怎么", "如何", "为什么", "帮我查", "查一下", "搜", "搜索", "告诉我", "请问", "哪里", "哪个", "什么", "是不是")
@@ -80,6 +81,9 @@ def looks_like_question(t: str) -> bool:
 
 # 写笔记后的「相似笔记推荐」候选，供「挂 N」确认（进程内存，重启即清，无副作用）
 _RECENT_LINK = {}
+
+# 最近一次问答（问题/答案/命中的库内路径），供「存为页」回填（进程内存，重启即清）
+_RECENT_QA = {}
 
 
 def _parse_nums(s):
@@ -262,6 +266,15 @@ def node_command(state: S) -> S:
             names = "、".join("《%s》" % c["title"] for c in picked)
             return {**state, "reply": "已关联 %d 篇：%s（Obsidian 星图里会连线）。" % (n, names)}
         return {**state, "reply": "这些已经关联过了。"}
+
+    if cmd == "saveqa":
+        qa = _RECENT_QA.get(user)
+        if not qa:
+            return {**state, "reply": "还没有可存的问答。先问一句带问号的问题，再发「存为页」。"}
+        import digest
+        title = arg.strip()
+        path = digest.save_qa_page(user, qa["question"], qa["answer"], qa["sources"], title)
+        return {**state, "reply": "已存为知识页草稿：%s\n去「技能」页待审区「通过」后转正进检索。" % path.name}
 
     if cmd == "start":
         name, parent = _split_parent(arg)
@@ -720,9 +733,13 @@ def node_qa(state: S) -> S:
                                   "做完一件事发「沉淀 技能名」就会有一张，之后问「怎么做」会自动带上它。"}
 
     prompt = ("基于下面的资料回答用户问题。资料里有技能卡时，优先按卡里的步骤回答，"
-              "并在开头注明「按《卡名》」；没有依据就直说没找到，不要编造。\n\n%s\n\n问题：%s" % (
+              "并在开头注明「按《卡名》」；没有依据就直说没找到，不要编造。"
+              "回答末尾单独起一行列出你实际引用的来源路径（格式：来源：路径1、路径2）；"
+              "没引用任何资料就写「来源：未引用库内笔记」。\n\n%s\n\n问题：%s" % (
                   "\n\n".join(parts), text))
     ans = llm.chat(prompt, tier="main", max_tokens=900)
+    srcs = [h["path"] for h in hits] if hits else []
+    _RECENT_QA[user] = {"question": text, "answer": ans, "sources": srcs}
     return {**state, "reply": ans}
 
 

@@ -449,6 +449,33 @@ def make_wiki_page(user, title, text, source_name=""):
     return _write_card(user, md, title, "wiki", draft=False)
 
 
+def save_qa_page(user, question, answer, sources=None, title=""):
+    """把一次问答存成知识页草稿（06-Wiki/_待审/），带来源可回溯。
+
+    强制走草稿：用户审核「通过」后才转正进 RAG。绝不直接写正式目录。
+    """
+    sources = [str(s).strip() for s in (sources or []) if str(s).strip()]
+    title = _yaml_safe((title or question).strip()[:40]) or "问答存档"
+    src_fm = ", ".join('"%s"' % s for s in sources)
+    src_lines = "\n".join("- %s" % s for s in sources) or "- （本次回答未引用库内笔记）"
+    md = (
+        "---\n"
+        "title: %s\n"
+        "type: wiki\n"
+        "aliases: []\n"
+        "tags: [问答存档]\n"
+        "sources: [%s]\n"
+        "---\n\n"
+        "# %s\n\n"
+        "**一句话定义**：%s\n\n"
+        "## 问题\n%s\n\n"
+        "## 回答\n%s\n\n"
+        "## 来源\n%s\n"
+    ) % (title, src_fm, title, title, question, answer, src_lines)
+    path = _write_card(user, md, title, "wiki", draft=True)
+    return path
+
+
 def list_skills(user):
     out = []
     for folder in (SKILL_DIR, WIKI_DIR):

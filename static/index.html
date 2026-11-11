@@ -1201,7 +1201,16 @@ window.askAi = function(){
   api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, history:window.chatHistory, models:models})})
     .then(function(d){
       chat.removeChild(loading);
-      chat.innerHTML += '<div class="item"><b style="color:#059669">AI：</b><span style="white-space:pre-wrap">' + escapeHtml(d.reply) + '</span></div>';
+      var box = document.createElement('div');
+      box.className = 'item';
+      box.innerHTML = '<b style="color:#059669">AI：</b><span style="white-space:pre-wrap">' + escapeHtml(d.reply) + '</span>';
+      var sb = document.createElement('button');
+      sb.className = 'x';
+      sb.style.marginTop = '8px';
+      sb.textContent = '存为知识页';
+      sb.onclick = function(){ window.saveQaPage(q, d.reply, sb); };
+      box.appendChild(sb);
+      chat.appendChild(box);
       window.chatHistory.push({role:'assistant', content:d.reply});
       chat.scrollTop = chat.scrollHeight;
     })
@@ -1209,6 +1218,15 @@ window.askAi = function(){
       chat.removeChild(loading);
       chat.innerHTML += '<div class="item" style="color:#dc2626">问AI失败，请重试</div>';
     });
+};
+window.saveQaPage = function(q, answer, btn){
+  api('/api/save-page', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({question:q, answer:answer, sources:[], title:''})})
+    .then(function(d){
+      if(d.ok){ btn.textContent = '已存 ✓（待审）'; btn.disabled = true; }
+      else { btn.textContent = '保存失败'; }
+    })
+    .catch(function(){ btn.textContent = '保存失败'; });
 };
 window.onload = function(){
   loadRecent(); loadTasks(); loadCtx(); loadSettings();
