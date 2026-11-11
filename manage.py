@@ -101,6 +101,20 @@ def cmd_index(args):
             print("  %s 失败：%s" % (name, e))
 
 
+def cmd_lint(args):
+    """跑一轮体检，只写报告不改页面。"""
+    import lint
+    names = [args.name] if args.name else [r["name"] for r in users.list_users()]
+    for name in names:
+        try:
+            res = lint.run_lint(name)
+            print("%s：待审 %d、断链 %d、孤儿 %d、缺来源 %d、无别名 %d → _index/体检报告.md" % (
+                name, res["drafts"], res["broken"], res["orphans"],
+                res["no_source"], res["no_alias"]))
+        except Exception as e:
+            print("  %s 失败：%s" % (name, e))
+
+
 def cmd_migrate(args):
     """把旧的 _project.md 迁移成 <任务名>.md（Obsidian 双链前提）。"""
     import tasks
@@ -166,6 +180,9 @@ def main():
     i = sub.add_parser("index", help="重建全库内容目录 index.md")
     i.add_argument("name", nargs="?", default=None)
 
+    l = sub.add_parser("lint", help="跑一轮体检（孤儿页/断链/缺来源等），只写报告")
+    l.add_argument("name", nargs="?", default=None)
+
     m = sub.add_parser("migrate", help="迁移旧任务文件（_project.md → 任务名.md）")
     m.add_argument("name", nargs="?", default=None)
 
@@ -179,7 +196,7 @@ def main():
         p.print_help()
         sys.exit(0)
     {"init": cmd_init, "adduser": cmd_adduser, "passwd": cmd_passwd,
-     "list": cmd_list, "reindex": cmd_reindex, "index": cmd_index,
+     "list": cmd_list, "reindex": cmd_reindex, "index": cmd_index, "lint": cmd_lint,
      "migrate": cmd_migrate, "digest": cmd_digest}[args.cmd](args)
 
 
