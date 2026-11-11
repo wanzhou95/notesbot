@@ -89,6 +89,18 @@ def cmd_reindex(args):
             print("已重建 %s 的索引：%d 个片段" % (r["name"], n))
 
 
+def cmd_index(args):
+    """重建全库内容目录 index.md（给 AI 问答当导航层）。"""
+    import index
+    names = [args.name] if args.name else [r["name"] for r in users.list_users()]
+    for name in names:
+        try:
+            n = index.rebuild_index(name)
+            print("已重建 %s 的内容目录：%d 条" % (name, n))
+        except Exception as e:
+            print("  %s 失败：%s" % (name, e))
+
+
 def cmd_migrate(args):
     """把旧的 _project.md 迁移成 <任务名>.md（Obsidian 双链前提）。"""
     import tasks
@@ -151,6 +163,9 @@ def main():
     r = sub.add_parser("reindex", help="重建语义索引")
     r.add_argument("name", nargs="?", default=None)
 
+    i = sub.add_parser("index", help="重建全库内容目录 index.md")
+    i.add_argument("name", nargs="?", default=None)
+
     m = sub.add_parser("migrate", help="迁移旧任务文件（_project.md → 任务名.md）")
     m.add_argument("name", nargs="?", default=None)
 
@@ -164,7 +179,7 @@ def main():
         p.print_help()
         sys.exit(0)
     {"init": cmd_init, "adduser": cmd_adduser, "passwd": cmd_passwd,
-     "list": cmd_list, "reindex": cmd_reindex,
+     "list": cmd_list, "reindex": cmd_reindex, "index": cmd_index,
      "migrate": cmd_migrate, "digest": cmd_digest}[args.cmd](args)
 
 

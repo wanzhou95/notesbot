@@ -193,6 +193,12 @@ def _log(user, action, detail):
             f.write(line)
     except Exception:
         pass
+    # 同步写进统一时间线 log.md（惰性导入，避免顶层循环依赖）
+    try:
+        import index
+        index.log_event(user, "fileops", "%s：%s" % (action, detail))
+    except Exception:
+        pass
 
 
 def _reindex(user, old_rel=None, new_rel=None):

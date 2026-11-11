@@ -56,6 +56,38 @@ def read_category_desc(user):
     return ""
 
 
+def read_contract_section(user, heading):
+    """按 `## 标题` 提取契约里的某一节。
+
+    优先读 `_index/AGENTS.md`，不存在则回退 `目录说明.md`（两者都含「归类规则」节，
+    保证老用户行为不变）；取不到指定节就返回文件前 1200 字兜底。
+    """
+    idx = _index_dir(user)
+    p = idx / "AGENTS.md"
+    if not p.exists():
+        p = idx / "目录说明.md"
+    if not p.exists():
+        return ""
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    lines = text.splitlines()
+    out = []
+    started = False
+    for ln in lines:
+        if ln.startswith("## "):
+            if started:
+                break
+            if ln[3:].strip() == heading:
+                started = True
+                continue
+        if started:
+            out.append(ln)
+    sec = "\n".join(out).strip()
+    return sec if sec else text[:1200]
+
+
 def write_note(user, text, title=None, tags=None, category="00-灵感库", source="bot"):
     if category not in CATEGORIES:
         category = "00-灵感库"

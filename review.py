@@ -372,6 +372,13 @@ def _approve(user, card):
                 digest.save_ledger(user, ledger, rows)
     except Exception:
         pass
+    # 转正后刷新全库目录 + 记时间线
+    try:
+        import index
+        index.rebuild_index(user)
+        index.log_event(user, "approve", "%s → %s" % (card["title"], rel))
+    except Exception:
+        pass
     return {"ok": True, "path": rel,
             "msg": "《%s》已通过，移到 %s 并补进检索。" % (card["title"], rel)}
 

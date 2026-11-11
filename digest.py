@@ -492,6 +492,14 @@ def _write_report(user, items, skipped, failed, elapsed):
     if not items and not failed:
         lines.append("没有新内容需要归纳。")
     p.write_text("\n".join(lines), encoding="utf-8")
+    # 刷新全库目录 + 追加时间线（失败不影响归纳主流程）
+    try:
+        import index
+        index.rebuild_index(user)
+        index.log_event(user, "digest",
+                        "处理 %d 个，跳过 %d 个，失败 %d 个" % (len(items), skipped, len(failed)))
+    except Exception:
+        pass
 
 
 def run(user, limit=None, dry_run=False):

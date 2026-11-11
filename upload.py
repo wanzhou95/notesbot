@@ -62,14 +62,14 @@ def ocr_image(user, data: bytes):
 
 
 def categorize_and_write(user, text, source="bot"):
-    """读目录说明让 AI 归类，写笔记并回传 (分类, 相对路径)。"""
-    desc = storage.read_category_desc(user)
+    """读契约的「归类规则」节让 AI 归类，写笔记并回传 (分类, 相对路径)。"""
+    rules = storage.read_contract_section(user, "归类规则")
     cat = "00-灵感库"
-    if desc:
+    if rules:
         prompt = (
-            "根据下面的目录说明，判断这条内容应该归到哪个分类。\n"
+            "根据下面的归类规则，判断这条内容应该归到哪个分类。\n"
             "只输出分类名（精确匹配目录名），不要解释。\n\n"
-            "目录说明：\n%s\n\n内容：%s" % (desc[:1500], text[:800])
+            "归类规则：\n%s\n\n内容：%s" % (rules, text[:800])
         )
         out = llm.chat(prompt, tier="router", max_tokens=30)
         cat = out.strip()

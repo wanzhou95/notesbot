@@ -698,6 +698,15 @@ def node_qa(state: S) -> S:
         if brief:
             parts.append("任务当前状态（从文件实时读取，最权威）：\n" + brief)
 
+    # 全库目录导航：先给一层「有哪些页」的全局视野，再让 RAG 精确召回（不是取代 RAG）
+    try:
+        import index as idx
+        toc = idx.read_index(user)
+        if toc:
+            parts.append("全库内容目录（先看这里有没有相关条目）：\n" + toc[:1500])
+    except Exception:
+        pass
+
     hits = rag.search(user, text, limit=5)
     if hits:
         ctx = "\n".join("【%s】%s" % (h["path"], h["text"]) for h in hits)
