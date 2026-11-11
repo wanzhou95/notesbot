@@ -18,7 +18,9 @@ CMD_PATTERNS = [
     ("start", re.compile(r"^\s*(开始|新建项目|开一个|开工)\s*(.+)$")),
     ("switch", re.compile(r"^\s*(切到|切换到|切换)\s*(.+)$")),
     ("todo", re.compile(r"^\s*(想做|待办|加个待办|加入待办|计划做)\s*[:：]?\s*(.+)$")),
-    ("addchild", re.compile(r"^\s*(?:加子任务|加个子任务|新建子任务|子任务)\s*[:：]?\s*(?P<arg>.+)$")),
+    ("addchild", re.compile(r"^\s*(?:添加子任务|增加子任务|新增子任务|建子任务|加子任务|加个子任务|新建子任务|子任务)\s*[:：]?\s*(?P<arg>.+)$")),
+    # 不带名字时给提示，别让「加子任务」这句话掉进步骤记录里
+    ("addchild", re.compile(r"^\s*(?:添加子任务|增加子任务|新增子任务|建子任务|加子任务|加个子任务|新建子任务|子任务)\s*[:：]?\s*$")),
     ("stepdone", re.compile(r"^\s*(完成|搞定|做完|勾掉)\s*第?\s*(\d+)\s*[步项]?\s*$")),
     ("taskdone", re.compile(r"^\s*(任务完成|标记完成)\s*(.*)$")),
     ("linkadd", re.compile(r"^\s*(关联|相关联?于)\s*[:：]?\s*(.+)$")),
@@ -309,7 +311,9 @@ def node_command(state: S) -> S:
         pname = p.get("name") or parent_slug
         names = _split_task_names(arg)
         if not names:
-            return {**state, "reply": "子任务名不能为空，比如「加子任务 飞书内容」。"}
+            return {**state, "reply": "子任务名不能为空，比如「加子任务 飞书内容」。\n"
+                                      "也认「添加子任务 / 建子任务 / 新建子任务 / 子任务」，"
+                                      "一次多个用顿号分隔。"}
         made, exist = [], []
         for n in names:
             slug, new = tasks.create_task(user, n, status="todo", parent=pname)
