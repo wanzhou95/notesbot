@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import shutil
 import time
@@ -235,6 +236,137 @@ def note(request: Request, path: str = ""):
     body = storage.strip_md_fence(body)
     return {"path": path, "name": p.name, "content": body,
             "mtime": m.strftime("%Y-%m-%d %H:%M")}
+
+
+# ---- 使用说明（首页折叠区）------------------------------------------------
+# 只读固定白名单文件名，绝不接受前端传路径，避免目录穿越。
+# 找不到时按「自己的库 → 公共手册 → 服务代码自带」回退，保证每个账号都能打开。
+HELP_DOCS = ("使用手册.md", "使用说明.md")
+HELP_FALLBACK_USER = "wanzhou"   # 公共手册所在账号（家里其他人也能看到）
+
+# 网页上要展示的是 Obsidian 里持续维护的那份手册，改文件即生效，不用重新部署。
+
+
+def _help_file(user):
+    """返回 (文件路径, 来源说明)；都找不到时返回 (None, "")。"""
+    roots = []
+    try:
+        roots.append((config.user_dir(user), "自己的库"))
+    except Exception:
+        pass
+    try:
+        meta = (config.USERS or {}).get(HELP_FALLBACK_USER)
+        if meta:
+            roots.append((config.NOTES_ROOT / meta.get("dir", HELP_FALLBACK_USER), "公共手册"))
+    except Exception:
+        pass
+    roots.append((STATIC_DIR.parent, "系统自带"))
+
+    seen = set()
+    for root, label in roots:
+        for fn in HELP_DOCS:
+            p = root / fn
+            try:
+                key = str(p.resolve())
+            except Exception:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            if p.is_file():
+                return p, label
+    return None, ""
+
+
+def _help_meta(text):
+    """只取 frontmatter 里用于展示的三个字段，其余（tags 等）忽略。"""
+    out = {}
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return out
+    for ln in m.group(1).splitlines():
+        if ":" not in ln or ln.startswith((" ", "\t", "-")):
+            continue
+        k, v = ln.split(":", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def _help_slug(value, separator):
+    """标题锚点保留中文，让 Obsidian 的 [[#标题]] 能对应到页内 id。"""
+    s = re.sub(r"[^\w\u4e00-\u9fff\s-]", "", (value or "").strip().lower())
+    s = re.sub(r"[\s%s]+" % separator, separator, s).strip(separator)
+    return s or "sec"
+
+
+def _help_sanitize(html):
+    """手册虽是自己写的，但经网页渲染仍按不可信输入处理：去脚本、事件属性、js 协议。"""
+    html = re.sub(r"(?is)<(script|style|iframe|object|embed|link|meta)\b[^>]*>.*?</\1\s*>", "", html)
+    html = re.sub(r"(?i)<(script|style|iframe|object|embed|link|meta)\b[^>]*/?>", "", html)
+    html = re.sub(r'(?i)\son[a-z0-9_-]+\s*=\s*(?:"[^"]*"|[^\s>]+)', "", html)
+    html = re.sub(r"(?i)javascript\s*:", "", html)
+    return html
+
+
+def _render_help(text):
+    """Markdown → (清洗后的 HTML, 扁平章节列表)。"""
+    body = storage.strip_frontmatter(text)
+
+    # Obsidian 双链：[[#章节]] 转成页内锚点，[[文件|别名]] 退化成纯文字，避免坏链接
+    def _wiki(m):
+        raw = m.group(1).strip()
+        if raw.startswith("#"):
+            t = raw.lstrip("#").strip()
+            return "[%s](#%s)" % (t, _help_slug(t, "-"))
+        return raw.split("|")[-1].split("/")[-1].strip()
+    body = re.sub(r"\[\[([^\]]+)\]\]", _wiki, body)
+
+    try:
+        import markdown
+    except ImportError:
+        # 部署环境万一缺库：降级成纯文本，别让整个首页报错
+        import html as _html
+        return "<pre>" + _html.escape(body) + "</pre>", []
+
+    md = markdown.Markdown(
+        extensions=["tables", "fenced_code", "sane_lists", "toc"],
+        extension_configs={"toc": {"slugify": _help_slug}})
+    html = _help_sanitize(md.convert(body))
+
+    heads = []
+    def _flat(tokens):
+        for t in tokens or []:
+            heads.append({"level": t.get("level", 2), "id": t.get("id", ""),
+                          "text": t.get("name", "")})
+            _flat(t.get("children", []))
+    _flat(getattr(md, "toc_tokens", []))
+    return html, heads
+
+
+@app.get("/api/help")
+def help_doc(request: Request):
+    """首页「使用说明」折叠区的数据源：读 Markdown 手册并渲染成 HTML。"""
+    u = require(request)
+    p, label = _help_file(u)
+    if not p:
+        return {"error": "没找到使用说明文件", "html": "", "headings": []}
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception as e:
+        return {"error": "说明文件读取失败：%s" % e, "html": "", "headings": []}
+    meta = _help_meta(text)
+    html, heads = _render_help(text)
+    import datetime
+    mt = datetime.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    return {
+        "title": meta.get("title") or "使用说明",
+        "version": meta.get("version", ""),
+        "updated": meta.get("updated", ""),
+        "source": "%s · %s" % (label, p.name),
+        "mtime": mt,
+        "html": html,
+        "headings": heads,
+    }
 
 
 # ---- 附件上传与整理 ----
