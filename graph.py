@@ -10,6 +10,7 @@ import rag
 import skills
 import video
 import fileops
+import agent_qa
 from llm import LLMRouter
 
 llm = LLMRouter()
@@ -722,24 +723,35 @@ def node_qa(state: S) -> S:
 
     hits = rag.search(user, text, limit=5)
     if hits:
-        ctx = "\n".join("【%s】%s" % (h["path"], h["text"]) for h in hits)
+        parts.append("笔记片段：\n" + "\n".join(
+            "【%s】%s" % (h["path"], h["text"]) for h in hits)[:4000])
     else:
         hits = storage.search(user, text, limit=5)
-        ctx = "\n".join("【%s】%s" % (h["path"], h["snippet"]) for h in hits) if hits else ""
-    if ctx:
-        parts.append("笔记片段：\n" + ctx[:4000])
-    if not parts:
+        if hits:
+            parts.append("笔记片段：\n" + "\n".join(
+                "【%s】%s" % (h["path"], h["snippet"]) for h in hits)[:4000])
+
+    # 循环式补检索：模型先判断资料够不够，不够就自己选工具（换关键词再搜 /
+    # 读某个笔记 / 查任务进度），拿到新资料回到判断，最多 3 轮。
+    # 判断环节走免费 glm-4.7-flash；最终答案仍走原来的 tier="main"。
+    seed = "\n\n".join(p for p in parts if p)
+    seed_sources = [h["path"] for h in hits] if hits else []
+    ctx, sources, trace = agent_qa.gather(user, text, seed, seed_sources)
+    if not ctx.strip():
         return {**state, "reply": "在自己的库里没找到相关内容。库里还没沉淀技能卡的话，"
                                   "做完一件事发「沉淀 技能名」就会有一张，之后问「怎么做」会自动带上它。"}
 
     prompt = ("基于下面的资料回答用户问题。资料里有技能卡时，优先按卡里的步骤回答，"
               "并在开头注明「按《卡名》」；没有依据就直说没找到，不要编造。"
               "回答末尾单独起一行列出你实际引用的来源路径（格式：来源：路径1、路径2）；"
-              "没引用任何资料就写「来源：未引用库内笔记」。\n\n%s\n\n问题：%s" % (
-                  "\n\n".join(parts), text))
+              "只从本次实际检索到的路径里列，不要编造路径；"
+              "没引用任何资料就写「来源：未引用库内笔记」。\n\n"
+              "本次可用来源：%s\n\n资料：\n%s\n\n问题：%s" % (
+                  "、".join(sources) if sources else "（无）", ctx, text))
     ans = llm.chat(prompt, tier="main", max_tokens=900)
-    srcs = [h["path"] for h in hits] if hits else []
-    _RECENT_QA[user] = {"question": text, "answer": ans, "sources": srcs}
+    _RECENT_QA[user] = {"question": text, "answer": ans, "sources": sources,
+                        "rounds": len([t for t in trace
+                                       if t.get("action") in agent_qa.ACTIONS])}
     return {**state, "reply": ans}
 
 
