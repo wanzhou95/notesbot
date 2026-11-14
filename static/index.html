@@ -150,6 +150,10 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .help .sub{font-weight:400;color:var(--mut);font-size:12px}
 .help-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-top:1px solid var(--line);background:var(--acc-50)}
 .help-bar select{flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13px;background:#fff;color:var(--tx)}
+.help-tabs{display:flex;gap:4px}
+.help-tabs button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;color:var(--mut);font-weight:500;transition:all .15s var(--ease)}
+.help-tabs button:hover{border-color:var(--acc);color:var(--acc-600)}
+.help-tabs button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 .help-bar button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer;color:var(--acc-600)}
 .help-bar button:hover{border-color:var(--acc)}
 .help-body{max-height:56vh;overflow-y:auto;padding:14px 18px 22px;font-size:14px;line-height:1.75;color:var(--tx);scroll-behavior:smooth}
@@ -172,7 +176,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v12</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v13</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -191,8 +195,9 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       <span class="caret">▶</span>
     </summary>
     <div class="help-bar">
+      <div class="help-tabs" id="helpTabs"></div>
       <select id="helpJump" onchange="jumpHelp(this.value)" aria-label="跳到章节"><option value="">跳到章节…</option></select>
-      <button type="button" onclick="loadHelp(true)">刷新</button>
+      <button type="button" onclick="loadHelp(null, true)">刷新</button>
       <span class="mut" id="helpSrc" style="font-size:11px"></span>
     </div>
     <div class="help-body" id="helpBody"><div class="mut">加载中…</div></div>
@@ -1274,23 +1279,32 @@ window.saveQaPage = function(q, answer, btn){
     .catch(function(){ btn.textContent = '保存失败'; });
 };
 var helpLoaded = false;
+var helpCurrent = '';
 window.onHelpToggle = function(){
   var box = document.getElementById('helpBox');
-  if(box.open && !helpLoaded){ loadHelp(false); }
+  if(box.open && !helpLoaded){ loadHelp(null, false); }
 };
-window.loadHelp = function(force){
+window.loadHelp = function(doc, force){
   var body = document.getElementById('helpBody');
+  if(doc === null || doc === undefined){ doc = helpCurrent || ''; }
   if(force){ helpLoaded = false; }
   body.innerHTML = '<div class="mut">加载中…</div>';
-  api('/api/help' + (force ? '?t=' + Date.now() : ''))
+  var qs = doc ? '?doc=' + encodeURIComponent(doc) : '';
+  if(force){ qs += (qs ? '&' : '?') + 't=' + Date.now(); }
+  api('/api/help' + qs)
     .then(function(d){
       if(d.error){ throw new Error(d.error); }
       helpLoaded = true;
+      helpCurrent = d.current || doc || '';
       body.innerHTML = d.html || '<div class="mut">说明文件为空</div>';
       document.getElementById('helpMeta').textContent = (d.title || '使用说明')
         + (d.version ? ' · v' + d.version : '')
         + (d.updated ? ' · ' + d.updated : '');
       document.getElementById('helpSrc').textContent = '来自：' + (d.source || '—');
+      document.getElementById('helpTabs').innerHTML = (d.docs || []).map(function(x){
+        return '<button type="button" class="' + (x.file === d.current ? 'on' : '')
+          + '" onclick="loadHelp(\'' + escAttr(x.file) + '\', false)">' + escapeHtml(x.label) + '</button>';
+      }).join('');
       var sel = document.getElementById('helpJump');
       var opts = '<option value="">跳到章节…</option>';
       (d.headings || []).forEach(function(h){

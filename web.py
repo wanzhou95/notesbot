@@ -241,14 +241,15 @@ def note(request: Request, path: str = ""):
 # ---- 使用说明（首页折叠区）------------------------------------------------
 # 只读固定白名单文件名，绝不接受前端传路径，避免目录穿越。
 # 找不到时按「自己的库 → 公共手册 → 服务代码自带」回退，保证每个账号都能打开。
-HELP_DOCS = ("使用手册.md", "使用说明.md")
+# (文件名, 网页显示名)，顺序即默认优先级；速查版在前
+HELP_DOCS = (("使用手册.md", "速查"), ("使用手册详细.md", "详细"), ("使用说明.md", "系统说明"))
 HELP_FALLBACK_USER = "wanzhou"   # 公共手册所在账号（家里其他人也能看到）
 
-# 网页上要展示的是 Obsidian 里持续维护的那份手册，改文件即生效，不用重新部署。
+# 网页上要展示的是 Obsidian 里持续维护的手册，改文件即生效，不用重新部署。
 
 
-def _help_file(user):
-    """返回 (文件路径, 来源说明)；都找不到时返回 (None, "")。"""
+def _help_candidates(user):
+    """三级候选根目录：自己的库 → 公共手册 → 服务代码自带。"""
     roots = []
     try:
         roots.append((config.user_dir(user), "自己的库"))
@@ -261,10 +262,20 @@ def _help_file(user):
     except Exception:
         pass
     roots.append((STATIC_DIR.parent, "系统自带"))
+    return roots
 
+
+def _help_files(user):
+    """列出当前账号能读到的说明文件（跨级去重，按 HELP_DOCS 顺序）。
+
+    只要用户库/公共手册里有文档，就不再把服务代码自带的「系统说明」兜底进来，
+    避免无谓地多一个 tab；两个来源都没有时才退回系统说明。
+    """
+    primary, fallback = [], []
     seen = set()
-    for root, label in roots:
-        for fn in HELP_DOCS:
+    for root, label in _help_candidates(user):
+        bucket = fallback if label == "系统自带" else primary
+        for fn, disp in HELP_DOCS:
             p = root / fn
             try:
                 key = str(p.resolve())
@@ -274,8 +285,20 @@ def _help_file(user):
                 continue
             seen.add(key)
             if p.is_file():
-                return p, label
-    return None, ""
+                bucket.append({"file": fn, "label": disp, "path": p, "source": label})
+    return primary or fallback
+
+
+def _pick_help(files, doc=None):
+    """按 doc（文件名或显示名）选一份；为空选默认第一份；找不到返回 None。"""
+    if not files:
+        return None
+    if doc:
+        for f in files:
+            if f["file"] == doc or f["label"] == doc:
+                return f
+        return None
+    return files[0]
 
 
 def _help_meta(text):
@@ -344,16 +367,19 @@ def _render_help(text):
 
 
 @app.get("/api/help")
-def help_doc(request: Request):
-    """首页「使用说明」折叠区的数据源：读 Markdown 手册并渲染成 HTML。"""
+def help_doc(request: Request, doc: str = ""):
+    """首页「使用说明」折叠区数据源：读 Markdown 手册渲染成 HTML，支持多份文档切换。"""
     u = require(request)
-    p, label = _help_file(u)
-    if not p:
-        return {"error": "没找到使用说明文件", "html": "", "headings": []}
+    files = _help_files(u)
+    f = _pick_help(files, doc)
+    if not f:
+        return {"error": "没找到使用说明文件", "html": "", "headings": [], "docs": []}
+    p, label = f["path"], f["source"]
     try:
         text = p.read_text(encoding="utf-8")
     except Exception as e:
-        return {"error": "说明文件读取失败：%s" % e, "html": "", "headings": []}
+        return {"error": "说明文件读取失败：%s" % e, "html": "", "headings": [],
+                "docs": [{"file": x["file"], "label": x["label"]} for x in files]}
     meta = _help_meta(text)
     html, heads = _render_help(text)
     import datetime
@@ -366,6 +392,8 @@ def help_doc(request: Request):
         "mtime": mt,
         "html": html,
         "headings": heads,
+        "docs": [{"file": x["file"], "label": x["label"]} for x in files],
+        "current": f["file"],
     }
 
 
