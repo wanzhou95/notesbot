@@ -40,15 +40,17 @@ def save_model_settings(settings):
 
 def digest_model_order(router):
     """定时归纳的调用顺序：勾选的模型按固定顺序（deepseek-v4-pro → glm-5.3-flash），
-    最后始终以 glm-4.7-flash（MODEL_FALLBACK 首个）兜底，不随勾选变化。"""
+    最后始终以 glm-4.7-flash 兜底（MODEL_GLM_FINAL，默认值），不随勾选、
+    也不随 MODEL_FALLBACK 顺序变化。"""
     s = load_model_settings()
     order = []
     if s["digest_ds"]:
         order.append(("ds", router.main_model))            # 默认 deepseek-v4-pro
     if s["digest_glm53"]:
         order.append(("glm", "glm-5.3-flash"))
-    if router.glm_models:
-        order.append(("glm", router.glm_models[0]))        # glm-4.7-flash 兜底
+    # 兜底固定 4.7：以前取 glm_models[0]，把 5.3 提到最前后会变成重复且失去 4.7 兜底
+    if router.glm_final and all(m != router.glm_final for _, m in order):
+        order.append(("glm", router.glm_final))
     return order
 
 
@@ -63,11 +65,23 @@ class LLMRouter:
         self.router_model = ENV.get("MODEL_ROUTER", "deepseek-flash")
         self.main_model = ENV.get("MODEL_MAIN", "deepseek-v4-pro")
         self.glm_models = [m.strip() for m in ENV.get("MODEL_FALLBACK", "glm-4.7-flash").split(",") if m.strip()]
+        # 定时归纳的最终兜底，独立于 MODEL_FALLBACK 顺序：
+        # 即使以后把 glm-5.3-flash 排到最前面，「4.7 兜底」这条规则也不受影响。
+        self.glm_final = ENV.get("MODEL_GLM_FINAL", "glm-4.7-flash")
         self.disable_thinking = ENV.get("GLM_DISABLE_THINKING", "1") == "1"
         self.always_think = {"glm-5.3-flash"}  # 始终思考模型，不支持关闭，传了直接 400
+        # 思考模型的最小 token 保底：max_tokens 太小时，思考会把额度吃光导致正文为空
+        # （实测 glm-5.3-flash 给 30 时 content=""、finish_reason=length），
+        # 会被误判成失败并降级。所以对思考模型强制拉到这个下限。
+        self.think_min_tokens = int(ENV.get("MODEL_THINK_MIN_TOKENS", "300"))
         self.client = httpx.Client(timeout=120)
 
     def _call(self, base, key, model, messages, max_tokens, glm=False):
+        # 思考模型（glm-5.3-flash）不支持关思考，且思考内容同样计入 max_tokens。
+        # 上限给小了会出现「HTTP 200 但正文为空」，被上层当成失败降级，
+        # 结果是配置里排第一的 5.3 永远轮不到。这里统一保底。
+        if glm and model in self.always_think and max_tokens < self.think_min_tokens:
+            max_tokens = self.think_min_tokens
         body = {"model": model, "messages": messages, "max_tokens": max_tokens}
         if glm and self.disable_thinking and model not in self.always_think:
             body["thinking"] = {"type": "disabled"}

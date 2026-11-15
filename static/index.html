@@ -320,7 +320,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       <label style="display:flex;align-items:center;gap:8px;font-weight:bold">
         <input type="checkbox" id="sw-deepseek"> DeepSeek（付费主力：deepseek-v4-pro）
       </label>
-      <div class="mut" style="margin:6px 0 0 24px">关闭后所有 AI 功能改用 GLM 系列回答（智谱账号），不再消耗 DeepSeek 余额</div>
+      <div class="mut" style="margin:6px 0 0 24px">关闭后所有 AI 功能改用 GLM 系列回答（智谱账号），不再消耗 DeepSeek 余额。<br>调用顺序：<b>glm-5.3-flash → glm-4.7-flash → glm-4-flash</b>，前一个失败自动降级到下一个</div>
     </div>
     <div style="margin:14px 0;padding:12px;border:1px solid #e5e7eb;border-radius:8px">
       <div style="font-weight:bold;margin-bottom:8px">问AI 增强模型（按次付费）</div>
