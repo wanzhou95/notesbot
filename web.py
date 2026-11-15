@@ -456,6 +456,33 @@ def process_api(request: Request, body: dict):
         raise HTTPException(500, "处理失败：%s" % e)
 
 
+@app.get("/api/asset/{rel:path}")
+def asset_view(request: Request, rel: str):
+    """打开上传的原始附件（html/pdf/图片等）。
+
+    只允许访问 `_assets/` 目录；html/pdf/图片内联返回，手机浏览器点链接即可直接渲染
+    （html 里的 JS 交互、localStorage 进度都能正常用）。其余类型按附件下载。
+    """
+    u = require(request)
+    rel = rel.lstrip("/")
+    if not rel.startswith("_assets/"):
+        raise HTTPException(403, "仅支持访问附件目录")
+    p = storage.asset_path(u, rel)
+    if not p:
+        raise HTTPException(404, "附件不存在")
+    import mimetypes
+    from urllib.parse import quote
+    ct, _ = mimetypes.guess_type(str(p))
+    ct = ct or "application/octet-stream"
+    inline = p.suffix.lower() in (".html", ".htm", ".png", ".jpg", ".jpeg",
+                                  ".gif", ".webp", ".svg", ".pdf")
+    disp = "inline" if inline else "attachment"
+    return FileResponse(str(p), media_type=ct, headers={
+        "Content-Disposition": "%s; filename*=UTF-8''%s" % (disp, quote(p.name)),
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
 @app.get("/api/projects")
 def projects(request: Request):
     u = require(request)

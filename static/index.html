@@ -445,6 +445,10 @@ window.renderUploads = function(){
       acts = '<button onclick="procUp(\'' + k + '\',\'ocr\',this)">识别文字</button>';
     } else {
       acts = '<button onclick="procUp(\'' + k + '\',\'organize\',this)">整理成笔记</button>';
+      if(u.path){
+        var enc = u.path.split('/').map(encodeURIComponent).join('/');
+        acts += ' <a class="exp" href="/api/asset/' + enc + '" target="_blank" rel="noopener noreferrer">原文件</a>';
+      }
     }
     return '<div class="upitem">' + thumb + '<div class="nm">' + escapeHtml(u.name) + '</div>' +
       '<div class="mut" style="font-size:12px">' + (u.kind === 'image' ? '图片 · 已存图库' : '文件') + '</div>' +
