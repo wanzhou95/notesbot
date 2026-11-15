@@ -493,6 +493,9 @@ window.procUp = function(key, action, btn){
       if(action === 'ocr'){
         u.res = d.text ? ('识别结果：\n' + d.text + '\n\n✅ 已存为笔记「' + d.category + '」，可在搜索里查看') :
                (d.msg || '未识别到文字');
+      } else if(d.dedup){
+        u.res = 'ℹ️ 这份内容之前已整理过（同一份只整理一次），在「' + d.category +
+                '」：' + escapeHtml(d.note || '') + '\n想再存一份就先删掉那份，或改一下文件内容。';
       } else {
         u.res = '✅ 已整理归档到「' + d.category + '」';
       }

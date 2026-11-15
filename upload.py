@@ -1,5 +1,6 @@
 """附件上传后的处理：提取文件文本、整理归档、图片 OCR 归档。"""
 import base64
+import hashlib
 import html as _html
 import io
 import re
@@ -8,6 +9,8 @@ import storage
 from llm import LLMRouter
 
 llm = LLMRouter()
+
+LEDGER_NAME = "整理台账.md"
 
 IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
 TEXT_EXTS = {"txt", "md", "markdown", "csv", "json", "py", "log", "yaml", "yml", "html"}
@@ -79,19 +82,74 @@ def html_to_text(data: bytes):
     return title, text
 
 
+def _ledger_path(user):
+    return storage.user_dir(user) / "_index" / LEDGER_NAME
+
+
+def load_ledger(user):
+    """读整理台账：{原始文件 sha256: {time, src, note, category}}。
+
+    台账存在的意义：同一份文件（哪怕改了名）重复点「整理成笔记」时，
+    直接返回上次的结果，不再新建第二份、也不重新跑一次归类。
+    """
+    p = _ledger_path(user)
+    out = {}
+    if not p.exists():
+        return out
+    try:
+        for ln in p.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if not ln.startswith("|") or set(ln) <= set("|-: "):
+                continue
+            cells = [c.strip() for c in ln.strip("|").split("|")]
+            if len(cells) < 5 or cells[0] in ("内容哈希", "---"):
+                continue
+            out[cells[0]] = {"time": cells[1], "src": cells[2],
+                             "note": cells[3], "category": cells[4]}
+    except Exception:
+        pass
+    return out
+
+
+def _append_ledger(user, h, src, note, category):
+    p = _ledger_path(user)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    new = not p.exists()
+    # 表格单元格里不能出现竖线，源文件名里偶尔会有
+    src = (src or "").replace("|", "/")
+    with open(p, "a", encoding="utf-8") as f:
+        if new:
+            f.write("# 整理台账\n\n> 上传文件整理成笔记的去重记录：同一内容只整理一次。\n\n")
+            f.write("| 内容哈希 | 时间 | 源文件 | 笔记 | 分类 |\n|---|---|---|---|---|\n")
+        f.write("| %s | %s | %s | %s | %s |\n" % (
+            h, storage.now().strftime("%Y-%m-%d %H:%M"), src, note, category))
+
+
 def organize(user, name, data: bytes, source="upload"):
-    """文件 → 提取文本 → AI 归类 → 存为笔记。返回 (分类, 笔记相对路径)。"""
+    """文件 → 提取文本 → AI 归类 → 存为笔记。返回 (分类, 笔记相对路径, 是否重复)。
+
+    去重口径是「原始文件字节」的 sha256：同一份文件重复整理只留一份笔记。
+    如果上次那份笔记已经被你删/移走，则允许重新整理。
+    """
+    h = hashlib.sha256(data).hexdigest()
+    old = load_ledger(user).get(h)
+    if old and (storage.user_dir(user) / old["note"]).is_file():
+        return old["category"], old["note"], True
+
     ext = ext_of(name)
     if ext in ("html", "htm"):
         title, text = html_to_text(data)
         if not text:
             # 正文都剥不出来时退回文件名，避免写空笔记
             text = name.rsplit(".", 1)[0]
-        return categorize_and_write(user, text, source=source, title=title or None)
-    text = extract_text(name, data)
-    if not text:
-        raise ValueError("文件里没有可提取的文字")
-    return categorize_and_write(user, text, source=source)
+        cat, rel = categorize_and_write(user, text, source=source, title=title or None)
+    else:
+        text = extract_text(name, data)
+        if not text:
+            raise ValueError("文件里没有可提取的文字")
+        cat, rel = categorize_and_write(user, text, source=source)
+    _append_ledger(user, h, name, rel, cat)
+    return cat, rel, False
 
 
 def ocr_image(user, data: bytes):

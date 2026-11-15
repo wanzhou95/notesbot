@@ -446,8 +446,9 @@ def process_api(request: Request, body: dict):
             return {"ok": True, "action": "save", "msg": "图片已存入图库：%s" % rel}
         # 文件
         if action == "organize":
-            cat, nrel = upload_mod.organize(u, p.name, data)
-            return {"ok": True, "action": "organize", "category": cat, "note": nrel}
+            cat, nrel, dup = upload_mod.organize(u, p.name, data)
+            return {"ok": True, "action": "organize", "category": cat,
+                    "note": nrel, "dedup": dup}
         text = upload_mod.extract_text(p.name, data)
         return {"ok": True, "action": "extract", "text": text[:2000]}
     except ValueError as e:
