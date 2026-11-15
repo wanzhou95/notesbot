@@ -9,12 +9,24 @@ from config import ENV, DATA_DIR
 SETTINGS_FILE = DATA_DIR / "model_settings.json"
 # 模型调用日志（每次成功调用记一行：时间/厂商/模型/档位），供回溯"这次用的哪个模型"
 USAGE_LOG = DATA_DIR / "model_usage.log"
+# 失败日志（每次降级记一行：时间/厂商/模型/档位/原因），用于回答"为什么落到某个模型"
+FAIL_LOG = DATA_DIR / "model_fail.log"
 
 
 def log_usage(prov, model, tier=""):
     try:
         with open(USAGE_LOG, "a", encoding="utf-8") as f:
             f.write("%s\t%s\t%s\t%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), prov, model, tier))
+    except Exception:
+        pass
+
+
+def log_fail(prov, model, tier, err):
+    """记一次失败，便于回溯降级原因（限流 / 无正文 / HTTP 4xx 等）。"""
+    try:
+        with open(FAIL_LOG, "a", encoding="utf-8") as f:
+            f.write("%s\t%s\t%s\t%s\t%s\n" % (
+                time.strftime("%Y-%m-%d %H:%M:%S"), prov, model, tier, str(err)[:160]))
     except Exception:
         pass
 
@@ -126,6 +138,7 @@ class LLMRouter:
                 return out
             except Exception as e:
                 last_err = e
+                log_fail(prov, model, tier, e)  # 记下为什么降级
                 continue
         return "[模型调用失败] %s" % last_err
 
@@ -157,12 +170,19 @@ class LLMRouter:
                 return out
             except Exception as e:
                 last_err = e
+                log_fail(prov, model, "digest", e)
                 continue
         return "[模型调用失败] %s" % last_err
 
     def vision(self, image_data_url, prompt, max_tokens=1500):
         """视觉识别（智谱免费视觉模型），image_data_url 为 base64 data URL。"""
-        candidates = [m.strip() for m in ENV.get("MODEL_VISION", "glm-4v-flash,glm-4v-plus,glm-4.6v-flash").split(",") if m.strip()]
+        # 默认顺序：plus 识别更干净（flash 会把状态栏/按钮字一起认进来）；
+        # flash 留作兜底。顺序可用 MODEL_VISION 覆盖。
+        candidates = [m.strip() for m in ENV.get(
+            "MODEL_VISION", "glm-4v-plus,glm-4v-flash,glm-4.6v-flash").split(",") if m.strip()]
+        # glm-4v 系列 max_tokens 上限 1024，给 1500 会直接 HTTP 400 (code 1210)，
+        # 导致首选模型每次被跳过、白等一轮。这里统一夹住。
+        max_tokens = min(max_tokens, 1024)
         if not self.glm_key:
             return "[视觉模型未配置] 缺少 GLM_API_KEY"
         last_err = None
@@ -185,9 +205,12 @@ class LLMRouter:
                 )
                 if r.status_code == 200:
                     data = r.json()
+                    log_usage("glm", model, "vision")  # 视觉链也记一笔，回答“OCR 用了哪个模型”
                     return data["choices"][0]["message"].get("content") or ""
                 last_err = "HTTP %s %s" % (r.status_code, r.text[:120])
+                log_fail("glm", model, "vision", last_err)
             except Exception as e:
                 last_err = e
+                log_fail("glm", model, "vision", e)
                 continue
         return "[视觉识别失败] %s" % last_err
