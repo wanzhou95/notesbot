@@ -20,7 +20,8 @@ def _reindex(user, path):
 
 
 def slugify(text: str, maxlen=24):
-    s = re.sub(r"[\\/:*?\"<>|\n\r\t]", "", text).strip()
+    # 额外清掉 # ! 全角空格 · 等，避免文件名出现 `#-标题`、`!doctype-html` 这类残留
+    s = re.sub(r"[\\/:*?\"<>|#!\u3000·\n\r\t]", "", text).strip()
     s = re.sub(r"\s+", "-", s)
     return (s[:maxlen] or "untitled").strip("-")
 

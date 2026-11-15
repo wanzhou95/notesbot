@@ -1,5 +1,6 @@
 """附件上传后的处理：提取文件文本、整理归档、图片 OCR 归档。"""
 import base64
+import html as _html
 import io
 import re
 
@@ -44,8 +45,49 @@ def extract_text(name, data: bytes):
     raise ValueError("暂不支持 .%s 文件，请上传 txt / md / docx / csv 等文本类文件" % ext)
 
 
+def html_to_text(data: bytes):
+    """HTML → (标题, 纯文本)。
+
+    标题优先取 <title>，其次第一个 <h1>；正文剥掉 script/style/注释/head 后
+    再去标签得到可见文字。以前 HTML 直接当纯文本存，导致文件名变成
+    `!doctype-html`、正文是一整段 HTML 源码，归类也因为只看 CSS 而乱跳。
+    """
+    raw = data.decode("utf-8", "replace")
+
+    def _strip(tag_text):
+        return _html.unescape(re.sub(r"<[^>]+>", "", tag_text)).strip()
+
+    title = ""
+    m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.S | re.I)
+    if m:
+        title = _strip(m.group(1))
+    if not title:
+        m = re.search(r"<h1[^>]*>(.*?)</h1>", raw, re.S | re.I)
+        if m:
+            title = _strip(m.group(1))
+
+    body = re.sub(r"(?is)<script.*?</script>", "", raw)
+    body = re.sub(r"(?is)<style.*?</style>", "", body)
+    body = re.sub(r"(?is)<!--.*?-->", "", body)
+    body = re.sub(r"(?is)<head.*?</head>", "", body)
+    # 常见块级结束标签转成换行，其余标签直接剥掉
+    body = re.sub(r"(?i)<(?:br\s*/?|/\s*(?:p|div|li|h[1-6]|tr|blockquote))\s*>", "\n", body)
+    body = re.sub(r"<[^>]+>", "", body)
+    text = _html.unescape(body)
+    lines = [re.sub(r"[ \t\u3000]+", " ", ln).strip() for ln in text.splitlines()]
+    text = "\n".join(ln for ln in lines if ln).strip()
+    return title, text
+
+
 def organize(user, name, data: bytes, source="upload"):
     """文件 → 提取文本 → AI 归类 → 存为笔记。返回 (分类, 笔记相对路径)。"""
+    ext = ext_of(name)
+    if ext in ("html", "htm"):
+        title, text = html_to_text(data)
+        if not text:
+            # 正文都剥不出来时退回文件名，避免写空笔记
+            text = name.rsplit(".", 1)[0]
+        return categorize_and_write(user, text, source=source, title=title or None)
     text = extract_text(name, data)
     if not text:
         raise ValueError("文件里没有可提取的文字")
@@ -61,7 +103,7 @@ def ocr_image(user, data: bytes):
     return llm.vision(data_url, prompt)
 
 
-def categorize_and_write(user, text, source="bot"):
+def categorize_and_write(user, text, source="bot", title=None):
     """读契约的「归类规则」节让 AI 归类，写笔记并回传 (分类, 相对路径)。"""
     rules = storage.read_contract_section(user, "归类规则")
     cat = "00-灵感库"
@@ -80,6 +122,6 @@ def categorize_and_write(user, text, source="bot"):
     # 想建任务请用「开始 X」/「想做 X」，这里把误判兜底到灵感库。
     if cat == "01-Projects":
         cat = "00-灵感库"
-    path = storage.write_note(user, text, category=cat, source=source)
+    path = storage.write_note(user, text, title=title, category=cat, source=source)
     rel = str(path.relative_to(storage.user_dir(user))).replace("\\", "/")
     return cat, rel
