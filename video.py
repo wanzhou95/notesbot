@@ -782,6 +782,26 @@ def get_job(jid):
         return dict(j) if j else None
 
 
+def list_jobs(user, done_limit=3):
+    """某用户的任务快照，给前端「处理中」列表用。
+
+    queued = 排在该任务前面、还没完成的个数：
+      0 表示正在跑（或下一个就跑），1 表示前面还有 1 个，依此类推。
+    任务按创建时间排序，队首先跑，所以直接取索引即可。
+    末尾附带最近几个已完成的任务（含失败的），前端用来提示错误和刷新列表。
+    """
+    with _JOBS_LOCK:
+        items = [dict(j) for j in JOBS.values() if j.get("user") == user]
+    items.sort(key=lambda j: j.get("t", 0))
+    pending = [j for j in items if not j.get("done")]
+    for i, j in enumerate(pending):
+        j["queued"] = i
+    finished = [j for j in items if j.get("done")][-done_limit:]
+    for j in finished:
+        j["queued"] = 0
+    return pending + finished
+
+
 def create_job(user, title_hint="", series=""):
     """只占位不启动：上传大文件时先把 job 建好，落盘完再 launch。"""
     jid = uuid.uuid4().hex[:12]

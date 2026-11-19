@@ -141,6 +141,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .vt-pts ul{margin:6px 0 0;padding-left:18px;color:var(--tx);line-height:1.7}
 .vidbar{height:4px;border-radius:2px;background:var(--line);overflow:hidden;margin-top:8px}
 .vidbar i{display:block;height:100%;background:var(--acc);transition:width .3s var(--ease)}
+.vj{border:1px solid var(--line);border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;background:var(--card)}
+.vj-t{font-size:13px;font-weight:600;line-height:1.45;word-break:break-all}
+.vj-s{font-size:12px;color:var(--mut);margin-top:4px}
+.vj.err{border-color:#f0b4b4;background:#fdf4f4}
+.vj.err .vj-s{color:#a33}
 .help{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);margin-bottom:14px;box-shadow:var(--sh-sm);overflow:hidden}
 .help>summary{list-style:none;cursor:pointer;padding:13px 16px;display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;color:var(--tx);transition:background .15s var(--ease)}
 .help>summary::-webkit-details-marker{display:none}
@@ -176,7 +181,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v14</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v15</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -294,6 +299,10 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
     <input type="file" id="vidfile" accept="video/*,audio/*,.mkv,.flv,.ts,.m4v" style="display:none">
     <div id="vidjob" class="msg" style="display:none"></div>
   </div>
+  <div class="card" id="vidq-wrap" style="display:none">
+    <div class="mut">处理中（一次跑一条，其余自动排队）</div>
+    <div id="vidq" style="margin-top:8px"></div>
+  </div>
   <div class="card">
     <div class="mut">已生成的视频速览（按系列分组，点开可看章节、要点和完整字幕）</div>
     <div id="vidlist"></div>
@@ -377,7 +386,7 @@ window.switchPane = function(t){
   });
   if(t === 'projects'){ loadTasks(); }
   if(t === 'skills'){ loadSkills(); loadReview(); }
-  if(t === 'video'){ loadVideos(); }
+  if(t === 'video'){ loadVideos(); startJobsPoll(); }
   if(t === 'settings'){ loadSettings(); }
 };
 window.send = function(){
@@ -966,30 +975,73 @@ window.onVideoFile = function(){
   xhr.send(fd);
 };
 
+/* 任务队列：一次跑一条，其余排队。轮询队列快照，比只盯单个任务更准 */
+window.vidJobs = [];
+window.vidJobsTimer = null;
+window.vidSeenDone = {};
+
+window.loadVidJobs = function(){
+  api('/api/video/jobs').then(function(d){
+    window.vidJobs = d.jobs || [];
+    var anyDone = false;
+    window.vidJobs.forEach(function(j){
+      if(j.done && !window.vidSeenDone[j.id]){
+        window.vidSeenDone[j.id] = 1;
+        anyDone = true;
+        if(j.err){
+          vidMsg('《' + (j.title || '') + '》处理失败：' + j.err, true);
+        }else{
+          vidMsg('《' + (j.title || '') + '》做好了（' + (j.method || '') + '，用了 '
+                 + (j.elapsed || 0) + ' 秒）\n已存到 ' + (j.note || '') + '\n下面列表里看速览。');
+        }
+      }
+    });
+    renderVidJobs();
+    if(anyDone){ loadVideos(); }
+  }).catch(function(){});
+};
+
+window.renderVidJobs = function(){
+  var wrap = document.getElementById('vidq-wrap');
+  var el = document.getElementById('vidq');
+  if(!wrap || !el){ return; }
+  var now = Date.now() / 1000;
+  var jobs = (window.vidJobs || []).filter(function(j){
+    if(j.done){ return !!j.err && (now - (j.t || 0) < 600); }   // 失败只显示最近 10 分钟
+    return true;
+  });
+  if(!jobs.length){ wrap.style.display = 'none'; el.innerHTML = ''; return; }
+  wrap.style.display = 'block';
+  el.innerHTML = jobs.map(function(j){
+    var pct = j.total ? Math.round(j.step / j.total * 100) : 0;
+    var label;
+    if(j.done && j.err){
+      label = '失败：' + j.err;
+    }else if(j.queued > 0){
+      label = '排队中 · 前面还有 ' + j.queued + ' 个';
+    }else{
+      label = (j.stage || '处理中') + (j.total ? '（' + j.step + '/' + j.total + ' 段）' : '');
+    }
+    var title = (j.title || '').trim() || j.id;
+    if(title.length > 52){ title = title.slice(0, 52) + '…'; }
+    return '<div class="vj' + (j.done && j.err ? ' err' : '') + '">'
+      + '<div class="vj-t">' + escapeHtml(title) + '</div>'
+      + '<div class="vj-s">' + escapeHtml(label) + '</div>'
+      + (j.total && !j.done ? '<div class="vidbar"><i style="width:' + pct + '%"></i></div>' : '')
+      + '</div>';
+  }).join('');
+};
+
+window.startJobsPoll = function(){
+  loadVidJobs();
+  if(window.vidJobsTimer){ return; }
+  window.vidJobsTimer = setInterval(loadVidJobs, 2500);
+};
+
 window.watchVideo = function(id){
-  if(window.vidPoll){ clearInterval(window.vidPoll); window.vidPoll = null; }
-  var t0 = Date.now();
-  var tick = function(){
-    api('/api/video/status?id=' + encodeURIComponent(id)).then(function(d){
-      if(d.err){
-        clearInterval(window.vidPoll); window.vidPoll = null;
-        vidMsg('处理失败：' + d.err, true);
-        return;
-      }
-      if(d.done){
-        clearInterval(window.vidPoll); window.vidPoll = null;
-        vidMsg('《' + (d.title || '') + '》做好了（' + (d.method || '') + '，用了 '
-               + (d.elapsed || 0) + ' 秒）\n已存到 ' + d.note + '\n下面列表里看速览，点「完整字幕」看原文。');
-        loadVideos();
-        return;
-      }
-      var pct = d.total ? Math.round(d.step / d.total * 100) : 0;
-      vidMsg(d.stage + (d.total ? '（' + d.step + '/' + d.total + ' 段）' : '')
-             + '　已用 ' + Math.round((Date.now() - t0) / 1000) + ' 秒', false, pct);
-    }).catch(function(){});
-  };
-  tick();
-  window.vidPoll = setInterval(tick, 2500);
+  // 具体进度交给「处理中」列表统一展示，这里只给一句即时反馈
+  vidMsg('已提交，进度见下方「处理中」。一条跑完才轮到下一条。');
+  startJobsPoll();
 };
 
 window.pickSeries = function(){

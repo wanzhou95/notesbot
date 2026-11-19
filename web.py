@@ -775,8 +775,16 @@ def api_video_url(request: Request, body: dict):
     if old:
         return {"ok": True, "done": True, "note": old["rel"], "title": old["title"],
                 "msg": "这个链接已经总结过了"}
-    jid = video.start_job(u, url=url, series=series)
+    jid = video.start_job(u, url=url, series=series, title_hint=url)
     return {"ok": True, "id": jid}
+
+
+@app.get("/api/video/jobs")
+def api_video_jobs(request: Request):
+    """当前用户的任务队列（含排队位置），前端「处理中」区块用。"""
+    u = require(request)
+    import video
+    return {"jobs": video.list_jobs(u)}
 
 
 VIDEO_MAX_BYTES = 2 * 1024 * 1024 * 1024      # 2GB
