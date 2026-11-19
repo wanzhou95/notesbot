@@ -757,6 +757,7 @@ def api_videos(request: Request):
     u = require(request)
     import video
     return {"list": video.list_notes(u), "dir": video.VIDEO_DIR,
+            "series": video.list_series(u),      # 已有系列目录，前端下拉用
             "max_minutes": video.MAX_MINUTES}
 
 

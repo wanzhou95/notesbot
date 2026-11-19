@@ -733,6 +733,19 @@ def list_notes(user, limit=50):
     return out
 
 
+def list_series(user):
+    """视频字幕目录下已有的系列（一级子目录），给前端下拉选择用。
+
+    只列一级目录：save_note 的系列名会过 _safe_name（斜杠被剔掉），
+    系列本来就只能是 `视频字幕/<系列>/` 这一层。
+    """
+    d = user_dir(user) / VIDEO_DIR
+    if not d.is_dir():
+        return []
+    return sorted(p.name for p in d.iterdir()
+                  if p.is_dir() and not p.name.startswith("."))
+
+
 def find_by_source(user, source):
     """同一个链接不重复花钱。
 

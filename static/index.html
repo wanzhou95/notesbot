@@ -176,7 +176,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v13</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v14</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -281,8 +281,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       <input id="vidurl" class="inp" style="flex:1" placeholder="https://www.bilibili.com/video/BV..." onkeydown="if(event.key==='Enter')videoFromUrl()">
       <button class="btn" style="width:auto" onclick="videoFromUrl()">解析</button>
     </div>
-    <div class="row" style="margin-top:8px">
-      <input id="vidseries" class="inp" style="flex:1;font-size:14px" placeholder="可选：归入某个系列（如「AI学习」），留空存到顶层">
+    <div class="row" style="margin-top:8px;align-items:center">
+      <span class="mut" style="white-space:nowrap">归入系列</span>
+      <input id="vidseries" class="inp" list="vidseries-options" style="flex:1;font-size:14px" placeholder="点「选已有」挑系列，或直接输入新名字；留空存到顶层">
+      <button class="btn ghost" style="width:auto" onclick="pickSeries()">选已有</button>
+      <datalist id="vidseries-options"></datalist>
     </div>
     <div class="row" style="margin-top:8px;align-items:center">
       <button class="btn ghost" style="width:auto" onclick="pickVideo()">📹 上传本地视频</button>
@@ -989,9 +992,39 @@ window.watchVideo = function(id){
   window.vidPoll = setInterval(tick, 2500);
 };
 
+window.pickSeries = function(){
+  // datalist 默认要手动点输入框才弹，这里给个显式入口
+  var inp = document.getElementById('vidseries');
+  if(!inp){ return; }
+  inp.focus();
+  if(inp.showPicker){
+    try{ inp.showPicker(); return; }catch(e){ /* 部分浏览器需用户手势，忽略 */ }
+  }
+  // 兜底：模拟点击让浏览器展开候选
+  inp.click();
+};
+
+window.fillSeriesOptions = function(list){
+  var dl = document.getElementById('vidseries-options');
+  if(!dl){ return; }
+  var seen = {}, names = [];
+  function push(s){
+    s = (s || '').trim();
+    if(s && !seen[s]){ seen[s] = 1; names.push(s); }
+  }
+  (list || []).forEach(push);
+  // 兜底：后端没返回目录列表时，从已有视频的 series 里提取
+  (window.vidItems || []).forEach(function(v){ push(v.series); });
+  names.sort();
+  dl.innerHTML = names.map(function(s){
+    return '<option value="' + escapeHtml(s) + '"></option>';
+  }).join('');
+};
+
 window.loadVideos = function(){
   api('/api/videos').then(function(d){
     window.vidItems = d.list || [];
+    window.fillSeriesOptions(d.series || []);
     renderVideos();
   }).catch(function(){});
 };
