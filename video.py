@@ -51,6 +51,10 @@ WORK_ROOT = DATA_DIR / "video_work"
 MAX_MINUTES = int(ENV.get("VIDEO_MAX_MIN", "180") or 180)
 ASR_MODEL = ENV.get("MODEL_ASR", "glm-asr-2512").strip() or "glm-asr-2512"
 CHUNK_SEC = 28
+
+
+class AsrQuotaError(RuntimeError):
+    """ASR 额度/鉴权类致命错误：重试和继续下一段都没意义，必须立即终止整个任务。"""
 VIDEO_EXTS = {"mp4", "mkv", "mov", "avi", "flv", "webm", "m4v", "ts", "wmv", "mpg", "mpeg"}
 AUDIO_EXTS = {"mp3", "m4a", "wav", "aac", "flac", "ogg", "opus", "amr"}
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -496,12 +500,22 @@ def asr_file(path, prev_text=""):
     data = {"model": ASR_MODEL, "stream": "false"}
     if prev_text:
         data["prompt"] = prev_text[-600:]      # 上一段当上下文，术语/人名更连贯
+    name = getattr(path, "name", None) or str(path).rsplit("/", 1)[-1]
     with open(path, "rb") as f:
         r = httpx.post(url, headers={"Authorization": "Bearer " + key},
-                       data=data, files={"file": (path.name, f, "audio/wav")},
+                       data=data, files={"file": (name, f, "audio/wav")},
                        timeout=120)
     if r.status_code != 200:
-        raise RuntimeError("ASR HTTP %s %s" % (r.status_code, r.text[:160]))
+        body = r.text[:200]
+        # 智谱 ASR 单独计费：资源包/余额用完返 429 code 1113。
+        # 这种错必须往上抛成「额度不足」，否则每段都被吞掉，最后只报「转写结果为空」，
+        # 排查时会误以为是音频没声音（2026-11-20 踩过）。
+        if r.status_code == 429 or "1113" in body or "余额不足" in body:
+            raise AsrQuotaError("ASR 额度不足（智谱语音识别资源包/余额用完），"
+                                "请到智谱开放平台充值后重试")
+        if r.status_code in (401, 403):
+            raise AsrQuotaError("ASR 鉴权失败（GLM_API_KEY 失效或没有语音识别权限）：%s" % body)
+        raise RuntimeError("ASR HTTP %s %s" % (r.status_code, body))
     d = r.json()
     text = (d.get("text") or "").strip()
     if not text:
@@ -531,6 +545,8 @@ def transcribe_media(path, workdir, on_progress=None):
             try:
                 text = asr_file(p, prev)
                 break
+            except AsrQuotaError:
+                raise                      # 额度/鉴权问题，继续跑只会每段都白白失败
             except Exception as e:
                 if attempt == 1:
                     fails += 1
