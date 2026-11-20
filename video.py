@@ -50,6 +50,8 @@ VIDEO_DIR = ENV.get("VIDEO_DIR", "03-Resources/视频字幕").strip("/")
 WORK_ROOT = DATA_DIR / "video_work"
 MAX_MINUTES = int(ENV.get("VIDEO_MAX_MIN", "180") or 180)
 ASR_MODEL = ENV.get("MODEL_ASR", "glm-asr-2512").strip() or "glm-asr-2512"
+# 语音识别供应商：deepseek（默认，按小时计费更便宜）/ glm（智谱，支持 prompt 上下文）
+ASR_PROVIDER = (ENV.get("ASR_PROVIDER", "deepseek") or "deepseek").strip().lower()
 CHUNK_SEC = 28
 
 
@@ -490,8 +492,36 @@ def slice_audio(src, outdir, seconds=CHUNK_SEC):
     return sorted(outdir.glob("c*.wav"))
 
 
-def asr_file(path, prev_text=""):
-    """单段音频 → 文字（GLM-ASR，单次 ≤30 秒 / 25MB）。"""
+def asr_deepseek(path):
+    """DeepSeek ASR：POST /v1/tools/asr。
+
+    限制：单次 ≤120 秒 / ≤8 MiB，16-bit PCM WAV 或 Ogg Opus；无 prompt 参数，
+    语言自动检测（支持中文/粤语等 21 种）。我们的切片是 28 秒单声道 16k WAV，正好符合。
+    计费按音频时长（比智谱便宜，约 $0.116/小时，限时五折）。
+    """
+    key = ENV.get("DEEPSEEK_API_KEY", "")
+    if not key:
+        raise AsrQuotaError("缺少 DEEPSEEK_API_KEY，无法用 DeepSeek 转写")
+    base = ENV.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    name = getattr(path, "name", None) or str(path).rsplit("/", 1)[-1]
+    with open(path, "rb") as f:
+        r = httpx.post(base + "/v1/tools/asr",
+                       headers={"Authorization": "Bearer " + key},
+                       files={"file": (name, f, "audio/wav")}, timeout=180)
+    if r.status_code != 200:
+        body = r.text[:200]
+        if r.status_code in (401, 402, 429):
+            raise AsrQuotaError("DeepSeek ASR 不可用（HTTP %s，余额不足/限流/鉴权失败）：%s"
+                                % (r.status_code, body))
+        if r.status_code == 503:
+            raise RuntimeError("DeepSeek ASR 服务繁忙，稍后重试")
+        raise RuntimeError("DeepSeek ASR HTTP %s %s" % (r.status_code, body))
+    d = r.json()
+    return re.sub(r"\s+", " ", (d.get("text") or "").strip())
+
+
+def _asr_glm(path, prev_text=""):
+    """智谱 ASR：单次 ≤30 秒 / 25MB，支持 prompt 传上一段做上下文。"""
     key = ENV.get("GLM_API_KEY", "")
     if not key:
         raise RuntimeError("缺少 GLM_API_KEY，无法转写")
@@ -524,6 +554,17 @@ def asr_file(path, prev_text=""):
         except Exception:
             text = ""
     return re.sub(r"\s+", " ", text)
+
+
+def asr_file(path, prev_text=""):
+    """单段音频 → 文字。由 ASR_PROVIDER 决定用哪家：
+
+    - deepseek（默认）：按小时计费更便宜，无 prompt 参数，语言自动检测
+    - glm：支持把上一段当 prompt，术语/人名更连贯（需有额度）
+    """
+    if ASR_PROVIDER == "glm":
+        return _asr_glm(path, prev_text)
+    return asr_deepseek(path)
 
 
 def transcribe_media(path, workdir, on_progress=None):
