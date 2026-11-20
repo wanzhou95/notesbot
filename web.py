@@ -784,7 +784,7 @@ def api_video_jobs(request: Request):
     """当前用户的任务队列（含排队位置），前端「处理中」区块用。"""
     u = require(request)
     import video
-    return {"jobs": video.list_jobs(u)}
+    return {"jobs": video.list_jobs(u), "concurrency": video.MAX_CONCURRENT}
 
 
 VIDEO_MAX_BYTES = 2 * 1024 * 1024 * 1024      # 2GB

@@ -300,7 +300,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
     <div id="vidjob" class="msg" style="display:none"></div>
   </div>
   <div class="card" id="vidq-wrap" style="display:none">
-    <div class="mut">处理中（一次跑一条，其余自动排队）</div>
+    <div class="mut" id="vidq-title">处理中（最多同时跑 3 条，其余自动排队）</div>
     <div id="vidq" style="margin-top:8px"></div>
   </div>
   <div class="card">
@@ -983,6 +983,9 @@ window.vidSeenDone = {};
 window.loadVidJobs = function(){
   api('/api/video/jobs').then(function(d){
     window.vidJobs = d.jobs || [];
+    var n = d.concurrency || 3;
+    var t = document.getElementById('vidq-title');
+    if(t){ t.textContent = '处理中（最多同时跑 ' + n + ' 条，其余自动排队）'; }
     var anyDone = false;
     window.vidJobs.forEach(function(j){
       if(j.done && !window.vidSeenDone[j.id]){
@@ -1017,10 +1020,12 @@ window.renderVidJobs = function(){
     var label;
     if(j.done && j.err){
       label = '失败：' + j.err;
+    }else if(j.running){
+      label = (j.stage || '处理中') + (j.total ? '（' + j.step + '/' + j.total + ' 段）' : '');
     }else if(j.queued > 0){
       label = '排队中 · 前面还有 ' + j.queued + ' 个';
     }else{
-      label = (j.stage || '处理中') + (j.total ? '（' + j.step + '/' + j.total + ' 段）' : '');
+      label = '等待开始…';
     }
     var title = (j.title || '').trim() || j.id;
     if(title.length > 52){ title = title.slice(0, 52) + '…'; }

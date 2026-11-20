@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -510,9 +511,13 @@ def asr_deepseek(path):
                        files={"file": (name, f, "audio/wav")}, timeout=180)
     if r.status_code != 200:
         body = r.text[:200]
-        if r.status_code in (401, 402, 429):
-            raise AsrQuotaError("DeepSeek ASR 不可用（HTTP %s，余额不足/限流/鉴权失败）：%s"
+        # 401 鉴权失效、402 余额不足 → 致命，重试没意义
+        if r.status_code in (401, 402):
+            raise AsrQuotaError("DeepSeek ASR 不可用（HTTP %s，余额不足或 key 失效）：%s"
                                 % (r.status_code, body))
+        # 429 是账号级并发超限（上限 50 个进行中），属于临时状态，交给上层退避重试
+        if r.status_code == 429:
+            raise RuntimeError("DeepSeek ASR 并发超限（HTTP 429），稍后重试")
         if r.status_code == 503:
             raise RuntimeError("DeepSeek ASR 服务繁忙，稍后重试")
         raise RuntimeError("DeepSeek ASR HTTP %s %s" % (r.status_code, body))
@@ -593,6 +598,8 @@ def transcribe_media(path, workdir, on_progress=None):
                     fails += 1
                     if fails >= 5 and i < 3:
                         raise RuntimeError("ASR 连续失败：%s" % e)
+                else:
+                    time.sleep(2)          # 429 并发超限 / 503 繁忙，等一下再试一次
         if not text or len(text) <= 1:          # 纯音乐/静音常返回空或单个符号
             continue
         # 连续 3 段输出同一句话 = 模型在复读（常见于长静音），丢掉
@@ -824,7 +831,27 @@ def find_by_source(user, source):
 
 JOBS = {}
 _JOBS_LOCK = threading.Lock()
-_QUEUE = threading.Semaphore(1)          # 一次只跑一个，避免并发烧钱
+# 同时处理几个视频任务。默认 3：DeepSeek ASR 账号级 50 并发，3 个任务远没到顶；
+# 本机 2 核 1.9G，任务里的 ffmpeg 切片是 CPU 密集型，3 个已接近这台机器的舒适区，
+# 再往上要靠下面的内存闸门兜底。可用 VIDEO_CONCURRENCY 覆盖。
+MAX_CONCURRENT = max(1, int(ENV.get("VIDEO_CONCURRENCY", "3") or 3))
+_QUEUE = threading.Semaphore(MAX_CONCURRENT)
+# 当前真正在跑的任务 id（区别于"在排队等信号量"的）
+RUNNING = set()
+# 可用内存低于这个值就先等，别让几个任务把机器撑爆（2G 内存机器默认 220MB）
+MIN_FREE_MB = int(ENV.get("VIDEO_MIN_FREE_MB", "220") or 220)
+
+
+def _mem_available_mb():
+    """读 /proc/meminfo 的 MemAvailable，非 Linux 或读不到时返回大数（不拦截）。"""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return 999999.0
 
 
 def _set(jid, **kw):
@@ -842,17 +869,26 @@ def get_job(jid):
 def list_jobs(user, done_limit=3):
     """某用户的任务快照，给前端「处理中」列表用。
 
-    queued = 排在该任务前面、还没完成的个数：
-      0 表示正在跑（或下一个就跑），1 表示前面还有 1 个，依此类推。
-    任务按创建时间排序，队首先跑，所以直接取索引即可。
+    并发跑 N 个之后，光看索引会算错，所以用 RUNNING 集合标记真正在跑的：
+      running=True      → 正在跑（显示具体阶段和进度条）
+      running=False, queued=0 → 有槽位就会立刻开跑
+      running=False, queued=N → 前面还有 N 个同样在等的任务
     末尾附带最近几个已完成的任务（含失败的），前端用来提示错误和刷新列表。
     """
     with _JOBS_LOCK:
         items = [dict(j) for j in JOBS.values() if j.get("user") == user]
+        running = set(RUNNING)
     items.sort(key=lambda j: j.get("t", 0))
     pending = [j for j in items if not j.get("done")]
-    for i, j in enumerate(pending):
-        j["queued"] = i
+    ahead = 0
+    for j in pending:
+        if j["id"] in running:
+            j["queued"] = 0
+            j["running"] = True
+        else:
+            j["queued"] = ahead          # 只统计"还在等"的任务，不把在跑的算进去
+            j["running"] = False
+            ahead += 1
     finished = [j for j in items if j.get("done")][-done_limit:]
     for j in finished:
         j["queued"] = 0
@@ -892,7 +928,14 @@ def _run(jid, url, file_path):
     work = WORK_ROOT / jid
     try:
         with _QUEUE:
+            with _JOBS_LOCK:
+                RUNNING.add(jid)
             _set(jid, stage="准备中")
+            # 内存闸门：2G 小机器同时跑 3 个任务时，先把可用内存等出来再开工，
+            # 宁可慢一点也不要被 OOM 杀掉整个服务（杀掉会连排队任务一起没）。
+            while _mem_available_mb() < MIN_FREE_MB:
+                _set(jid, stage="等待内存（当前可用 %.0f MB）…" % _mem_available_mb())
+                time.sleep(5)
             work.mkdir(parents=True, exist_ok=True)
             job = get_job(jid) or {}
             user = job.get("user")
@@ -955,7 +998,7 @@ def _run(jid, url, file_path):
                     src, work,
                     on_progress=lambda i, n: _set(jid, step=i, total=n,
                                                   stage="转写中 %d/%d 段" % (i, n)))
-                method = "GLM-ASR 转写"
+                method = "%s ASR 转写" % ("GLM" if ASR_PROVIDER == "glm" else "DeepSeek")
 
             _set(jid, stage="生成速览")
             summary = summarize(pairs)
@@ -969,4 +1012,6 @@ def _run(jid, url, file_path):
         _set(jid, stage="失败", done=True, err=str(e)[:300],
              elapsed=round((datetime.now() - t0).total_seconds(), 1))
     finally:
+        with _JOBS_LOCK:
+            RUNNING.discard(jid)      # 不管成功失败，都要从"正在跑"里摘掉
         shutil.rmtree(work, ignore_errors=True)
