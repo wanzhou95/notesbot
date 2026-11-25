@@ -148,8 +148,10 @@ def feishu_sso_start(request: Request):
         return _sso_page("飞书免登未配置", "<p>服务器缺 <code>FEISHU_APP_ID</code> / "
                                           "<code>FEISHU_APP_SECRET</code>。</p>", 500)
     state = secrets.token_hex(8)
-    url = feishu.authorize_url(_sso_redirect_uri(request), state,
-                              in_app=_is_feishu_ua(request))
+    redirect_uri = _sso_redirect_uri(request)
+    in_app = _is_feishu_ua(request)
+    feishu.log("SSO 发起: in_app=%s redirect=%s" % (in_app, redirect_uri))
+    url = feishu.authorize_url(redirect_uri, state, in_app=in_app)
     r = RedirectResponse(url)
     r.set_cookie(SSO_STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600)
     return r
@@ -163,6 +165,7 @@ def feishu_sso_callback(request: Request, code: str = "", state: str = ""):
     同时种一个短命 cookie，让首页不再自动跳转。
     """
     def fail(msg: str, status: int = 200):
+        feishu.log("SSO 失败(%d): %s" % (status, msg.replace("\n", " ")[:200]))
         r = _sso_page("飞书免登失败", msg, status)
         r.set_cookie(SSO_TRIED_COOKIE, "1", httponly=True, samesite="lax", max_age=3600)
         r.delete_cookie(SSO_STATE_COOKIE)
@@ -194,6 +197,7 @@ def feishu_sso_callback(request: Request, code: str = "", state: str = ""):
             % open_id)
 
     token = make_session(user)
+    feishu.log("SSO 成功: open_id=%s... -> %s" % (open_id[:12], user))
     r = RedirectResponse("/")
     r.set_cookie("nb_token", token, httponly=True, samesite="lax", max_age=7 * 86400)
     r.delete_cookie(SSO_STATE_COOKIE)
