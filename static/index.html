@@ -190,7 +190,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v19</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v20</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -324,13 +324,6 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       <span class="mut">回答人格：</span>
       <span id="personaChips" style="display:flex;gap:8px;flex-wrap:wrap"></span>
     </div>
-    <div class="row" style="flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0 0;font-size:13px" id="pmRow">
-      <span class="mut">增强模型（付费，勾选本次提问使用）：</span>
-      <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.3-flash"> GLM-5.3-Flash <span class="mut">推荐·近免费</span></label>
-      <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.3"> GLM-5.3 <span class="mut">旗舰</span></label>
-      <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.2"> GLM-5.2 <span class="mut">旗舰</span></label>
-      <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5"> GLM-5 <span class="mut">推荐·最便宜</span></label>
-    </div>
     <div id="chat" style="max-height:420px;overflow-y:auto;margin:10px 0"></div>
     <div class="row">
       <input id="askq" class="inp" style="flex:1" placeholder="问任何问题，回车或点发送">
@@ -346,11 +339,6 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
         <input type="checkbox" id="sw-deepseek"> DeepSeek（付费主力：deepseek-v4-pro）
       </label>
       <div class="mut" style="margin:6px 0 0 24px">关闭后所有 AI 功能改用 GLM 系列回答（智谱账号），不再消耗 DeepSeek 余额。<br>调用顺序：<b>glm-5.3-flash → glm-4.7-flash → glm-4-flash</b>，前一个失败自动降级到下一个</div>
-    </div>
-    <div style="margin:14px 0;padding:12px;border:1px solid #e5e7eb;border-radius:8px">
-      <div style="font-weight:bold;margin-bottom:8px">问AI 增强模型（按次付费）</div>
-      <div id="pmSwitches"></div>
-      <div class="mut" style="margin-top:6px">关闭后问AI 页不再出现该勾选框，后端同时拦截</div>
     </div>
     <div style="margin:14px 0;padding:12px;border:1px solid #e5e7eb;border-radius:8px">
       <div style="font-weight:bold;margin-bottom:8px">定时归纳模型</div>
@@ -1273,16 +1261,6 @@ window.loadSettings = function(){
       document.getElementById('sw-deepseek').checked = d.deepseek;
       document.getElementById('digest-ds').checked = d.digest_ds;
       document.getElementById('digest-glm53').checked = d.digest_glm53;
-      var box = document.getElementById('pmSwitches');
-      box.innerHTML = '';
-      Object.keys(d.models).forEach(function(k){
-        var info = d.models[k];
-        var row = document.createElement('label');
-        row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:6px 0';
-        row.innerHTML = '<input type="checkbox" class="pmsw" data-m="' + k + '"' + (d.premium[k] ? ' checked' : '') + '> ' + info[0] + ' <span class="mut">' + info[1] + '</span>';
-        box.appendChild(row);
-      });
-      renderPmRow();
     });
   loadVideoCookies();
 };
@@ -1323,17 +1301,8 @@ window.clearVideoCookies = function(){
       loadVideoCookies();
     });
 };
-function renderPmRow(){
-  if(!window.modelConf){ return; }
-  document.querySelectorAll('#pmRow .pm').forEach(function(c){
-    var lbl = c.parentElement;
-    lbl.style.display = window.modelConf.premium[c.value] ? 'flex' : 'none';
-  });
-}
 window.saveSettings = function(){
-  var premium = {};
-  document.querySelectorAll('#pmSwitches .pmsw').forEach(function(c){ premium[c.dataset.m] = c.checked; });
-  api('/api/model-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deepseek: document.getElementById('sw-deepseek').checked, premium: premium, digest_ds: document.getElementById('digest-ds').checked, digest_glm53: document.getElementById('digest-glm53').checked})})
+  api('/api/model-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deepseek: document.getElementById('sw-deepseek').checked, digest_ds: document.getElementById('digest-ds').checked, digest_glm53: document.getElementById('digest-glm53').checked})})
     .then(function(d){
       if(d.ok){
         document.getElementById('setmsg').textContent = '已保存，立即生效 ✓';
@@ -1341,8 +1310,6 @@ window.saveSettings = function(){
           window.modelConf.deepseek = document.getElementById('sw-deepseek').checked;
           window.modelConf.digest_ds = document.getElementById('digest-ds').checked;
           window.modelConf.digest_glm53 = document.getElementById('digest-glm53').checked;
-          Object.keys(premium).forEach(function(k){ window.modelConf.premium[k] = premium[k]; });
-          renderPmRow();
         }
       } else {
         document.getElementById('setmsg').textContent = d.err || '保存失败';
@@ -1396,18 +1363,15 @@ window.askAi = function(){
   var q = document.getElementById('askq').value.trim();
   if(!q){ return; }
   document.getElementById('askq').value = '';
-  var models = [];
-  document.querySelectorAll('#pane-ask .pm').forEach(function(c){ if(c.checked){ models.push(c.value); } });
   var chat = document.getElementById('chat');
-  var tag = models.length ? '<span class="mut">[' + models.join('+') + ']</span> ' : '';
-  chat.innerHTML += '<div class="item"><b style="color:#4f46e5">我：</b>' + tag + escapeHtml(q) + '</div>';
+  chat.innerHTML += '<div class="item"><b style="color:#4f46e5">我：</b>' + escapeHtml(q) + '</div>';
   var loading = document.createElement('div');
   loading.className = 'mut';
   loading.textContent = 'AI 思考中...';
   chat.appendChild(loading);
   chat.scrollTop = chat.scrollHeight;
   window.chatHistory.push({role:'user', content:q});
-  api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, history:window.chatHistory, models:models, persona: window.personaSel || ''})})
+  api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, history:window.chatHistory, persona: window.personaSel || ''})})
     .then(function(d){
       chat.removeChild(loading);
       var box = document.createElement('div');
