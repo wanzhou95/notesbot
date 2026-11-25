@@ -42,6 +42,7 @@ import hmac
 import json
 import re
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -64,6 +65,17 @@ _MENTION_RE = re.compile(r"@_user_\d+\s*")
 _client = httpx.Client(timeout=30)
 _tok_lock = threading.Lock()
 _tok: dict[str, Any] = {"token": "", "exp": 0.0}
+
+
+def log(msg: str) -> None:
+    """记一行运行日志。
+
+    **必须走 stderr 且 flush**：`notesbot.service` 没设 PYTHONUNBUFFERED，
+    print 到管道是块缓冲，日志会压在缓冲区里直到写满或进程退出——线上排查时
+    等于「日志不存在」。2026-11-25 首次联调就踩到了：笔记已经落库、回复已经
+    发出，但 journalctl 里一行都看不到，白查了十分钟。
+    """
+    print("[feishu] " + msg, file=sys.stderr, flush=True)
 
 
 # ==================== 配置 ====================
@@ -153,11 +165,11 @@ def tenant_token(force: bool = False) -> str:
 
 
 def send_text(receive_id: str, text: str, id_type: str = "chat_id") -> bool:
-    """发一条文本消息。失败返回 False 并打印原因（不抛，避免拖垮后台任务）。"""
+    """发一条文本消息。失败返回 False 并记日志（不抛，避免拖垮后台任务）。"""
     if not receive_id or not text:
         return False
     if not configured():
-        print("[feishu] 未配置应用凭据，跳过发送")
+        log("未配置应用凭据，跳过发送")
         return False
     try:
         r = _client.post(
@@ -169,11 +181,14 @@ def send_text(receive_id: str, text: str, id_type: str = "chat_id") -> bool:
         )
         d = r.json()
         if d.get("code") != 0:
-            print("[feishu] 发送失败: %s %s" % (d.get("code"), d.get("msg")))
+            log("发送失败: %s %s" % (d.get("code"), d.get("msg")))
             return False
+        # 成功也留一行 message_id，出事时能拿它去飞书后台「消息查询」对账
+        mid = ((d.get("data") or {}).get("message_id") or "")[:18]
+        log("已发送 %d 字 -> %s (msg %s)" % (len(text), receive_id[:12], mid))
         return True
     except Exception as e:
-        print("[feishu] 发送异常: %s: %s" % (type(e).__name__, str(e)[:200]))
+        log("发送异常: %s: %s" % (type(e).__name__, str(e)[:200]))
         return False
 
 
@@ -231,7 +246,7 @@ def mark_seen(event_id: str) -> bool:
         return fresh
     except Exception as e:
         # 去重库坏了也别把消息吞掉：宁可可能重复一次，也不能丢消息
-        print("[feishu] 去重库异常: %s" % str(e)[:150])
+        log("去重库异常: %s" % str(e)[:150])
         return True
 
 
@@ -335,13 +350,12 @@ def run_job(graph, user: str, chat_id: str, text: str) -> None:
         out = graph.invoke(state) or {}
         reply = str(out.get("reply") or "").strip() or "（处理完成，但没有产生回复）"
     except Exception as e:
-        print("[feishu] 处理异常: %s: %s" % (type(e).__name__, str(e)[:300]))
+        log("处理异常: %s: %s" % (type(e).__name__, str(e)[:300]))
         reply = "处理时出错了：%s" % str(e)[:200]
     for part in _chunks(reply):
         if not send_text(chat_id, part):
             break
-    print("[feishu] %s -> %s  %d 字  %.1fs" % (user, chat_id[:12], len(reply),
-                                               time.time() - t0))
+    log("%s 处理完成，%d 字，耗时 %.1fs" % (user, len(reply), time.time() - t0))
 
 
 def status() -> dict:
