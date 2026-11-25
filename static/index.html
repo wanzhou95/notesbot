@@ -300,7 +300,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
     <div id="vidjob" class="msg" style="display:none"></div>
   </div>
   <div class="card" id="vidq-wrap" style="display:none">
-    <div class="mut" id="vidq-title">处理中（最多同时跑 3 条，其余自动排队）</div>
+    <div class="mut" id="vidq-title">处理中（一次跑一条，其余自动排队）</div>
     <div id="vidq" style="margin-top:8px"></div>
   </div>
   <div class="card">
@@ -985,7 +985,8 @@ window.loadVidJobs = function(){
     window.vidJobs = d.jobs || [];
     var n = d.concurrency || 3;
     var t = document.getElementById('vidq-title');
-    if(t){ t.textContent = '处理中（最多同时跑 ' + n + ' 条，其余自动排队）'; }
+    if(t){ t.textContent = (n <= 1) ? '处理中（一次跑一条，其余自动排队）'
+                                    : '处理中（最多同时跑 ' + n + ' 条，其余自动排队）'; }
     var anyDone = false;
     window.vidJobs.forEach(function(j){
       if(j.done && !window.vidSeenDone[j.id]){
