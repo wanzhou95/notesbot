@@ -187,6 +187,41 @@ def cmd_video_index(args):
             print("%s：失败 %s" % (name, e))
 
 
+def cmd_feishu_status(args):
+    """飞书 bot 自检：凭据是否齐、绑了谁、有哪些没授权的 open_id。"""
+    import feishu
+    s = feishu.status()
+    print("应用凭据   : %s" % ("已配置（...%s）" % s["app_id_tail"] if s["configured"] else "未配置"))
+    print("验签 token : %s" % ("已配置" if s["verify_token_set"] else "未配置（不校验，建议补上）"))
+    print("绑定文件   : %s" % s["identity_file"])
+    if s["bindings"]:
+        print("已绑定 %d 个：" % len(s["bindings"]))
+        for k, v in s["bindings"].items():
+            print("  %s -> %s" % (k, v))
+    else:
+        print("已绑定     : 无（先让本人发一条消息，再用 feishu-bind 绑）")
+    if s["unknown_open_ids"]:
+        print("未授权的 open_id（可直接拿来绑）：")
+        for k in s["unknown_open_ids"]:
+            print("  %s" % k)
+    else:
+        print("未授权记录 : 无")
+
+
+def cmd_feishu_bind(args):
+    """把飞书 open_id 绑到本地账号。"""
+    import feishu
+    config.reload_users()
+    if args.user not in config.USERS:
+        print("没有这个账号：%s（现有：%s）" % (args.user, ", ".join(config.USERS)))
+        sys.exit(1)
+    if not args.open_id.startswith("ou_"):
+        print("open_id 通常以 ou_ 开头，请确认：%s" % args.open_id)
+    feishu.bind(args.open_id, args.user)
+    print("已绑定：%s -> %s" % (args.open_id, args.user))
+    print("文件：%s" % feishu.identity_path())
+
+
 def cmd_migrate(args):
     """把旧的 _project.md 迁移成 <任务名>.md（Obsidian 双链前提）。"""
     import tasks
@@ -281,6 +316,11 @@ def main():
     vi.add_argument("name", nargs="?", default=None)
     vi.add_argument("--series", default=None, help="只重建某个系列")
 
+    sub.add_parser("feishu-status", help="飞书 bot 自检（凭据/绑定/未授权 open_id）")
+    fb = sub.add_parser("feishu-bind", help="把飞书 open_id 绑到本地账号")
+    fb.add_argument("open_id", help="飞书的 open_id，以 ou_ 开头")
+    fb.add_argument("user", help="本地账号名（other / wanzhou / xuyingsi ...）")
+
     args = p.parse_args()
     if not args.cmd:
         p.print_help()
@@ -289,7 +329,8 @@ def main():
      "list": cmd_list, "reindex": cmd_reindex, "index": cmd_index, "lint": cmd_lint,
      "migrate": cmd_migrate, "digest": cmd_digest, "persona-list": cmd_persona_list,
      "persona-index": cmd_persona_index, "persona-stats": cmd_persona_stats,
-     "video-index": cmd_video_index}[args.cmd](args)
+     "video-index": cmd_video_index, "feishu-status": cmd_feishu_status,
+     "feishu-bind": cmd_feishu_bind}[args.cmd](args)
 
 
 if __name__ == "__main__":

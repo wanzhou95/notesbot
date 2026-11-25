@@ -5,10 +5,12 @@ import shutil
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form
+from fastapi import (FastAPI, Request, HTTPException, UploadFile, File, Form,
+                     BackgroundTasks)
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
 import config
+import feishu
 import storage
 import rag
 import users as users_mod
@@ -84,6 +86,20 @@ def _html(filename: str):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.post("/api/feishu/event")
+def feishu_event(request: Request, body: dict, bg: BackgroundTasks):
+    """飞书事件回调。**故意不加登录**——飞书服务器不会带 cookie。
+
+    安全性靠两层：Verification Token 比对 + open_id 白名单（见 feishu.parse_event）。
+    这个函数必须秒回：飞书 3 秒超时会重推，所以真正的处理丢进 BackgroundTasks
+    （传同步函数，Starlette 会放进线程池，不堵事件循环）。
+    """
+    reply, job = feishu.parse_event(body)
+    if job:
+        bg.add_task(feishu.run_job, GRAPH, *job)
+    return reply
 
 
 # ---- 公安联网备案图标 ----
