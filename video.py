@@ -33,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -1110,6 +1111,108 @@ RUNNING = set()
 MIN_FREE_MB = int(ENV.get("VIDEO_MIN_FREE_MB", "220") or 220)
 
 
+# ---------------- 任务持久化（重启不丢队列） ----------------
+# 为什么要有：JOBS 只在内存里，重启即蒸发。11-25 那次重启把一个跑到一半的任务
+# 静默吃掉了，用户只看到队列空了、视频没进来，既没报错也没痕迹；video_work 里
+# 还留下一个空目录当唯一证据。
+#
+# 设计取舍：
+#   - 内存 JOBS 仍是唯一读写源，DB 只是镜像。读路径零开销。
+#   - 写路径走脏标记 + 后台线程，因为 _set 被 ASR 每段进度回调高频调用，
+#     不能每次都落盘（转写一个视频约 200 段）。
+#   - 终态（done=True）立即落盘，结论不会因为进程被 kill 而丢。
+#   - **不做自动续跑**：上传的源文件在 work 目录里，任务结束就被删了；重跑
+#     等于重新下载 + 重新花 ASR 的钱。所以中断任务一律标失败并说明中断在哪一步。
+JOBS_DB = DATA_DIR / "video_jobs.db"
+_DB_LOCK = threading.Lock()
+_DIRTY: set = set()
+_FLUSH_EVERY = 2.0          # 秒：脏任务最多延迟这么久落盘
+_KEEP_ROWS = 200            # DB 里最多保留多少条历史任务
+_FLUSH_THREAD = None
+_FIELDS = ("id", "user", "title", "series", "stage", "step", "total", "done",
+           "err", "note", "method", "duration", "elapsed", "t", "t_end",
+           "url", "file_path")
+
+
+def _db():
+    con = sqlite3.connect(str(JOBS_DB), timeout=10)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def _db_init():
+    with _DB_LOCK:
+        con = _db()
+        try:
+            con.executescript("""
+                PRAGMA journal_mode=WAL;
+                PRAGMA synchronous=NORMAL;
+                CREATE TABLE IF NOT EXISTS jobs (
+                  id TEXT PRIMARY KEY, user TEXT, title TEXT, series TEXT,
+                  stage TEXT, step INTEGER, total INTEGER, done INTEGER,
+                  err TEXT, note TEXT, method TEXT, duration TEXT,
+                  elapsed REAL, t REAL, t_end REAL, url TEXT, file_path TEXT,
+                  updated REAL
+                );
+                CREATE INDEX IF NOT EXISTS jobs_by_time ON jobs(t_end);
+            """)
+            con.commit()
+        finally:
+            con.close()
+
+
+def _flush(only=None):
+    """把脏任务（或 only 指定的任务）从内存镜像到 DB。失败不抛，只记一行。"""
+    ids = set(only or ())
+    with _JOBS_LOCK:
+        ids |= _DIRTY
+        _DIRTY.clear()
+        rows = []
+        for jid in ids:
+            j = JOBS.get(jid)
+            if j:
+                rows.append([j.get(k) for k in _FIELDS])
+    if not rows:
+        return
+    cols = ", ".join(_FIELDS)
+    marks = ", ".join("?" * len(_FIELDS))
+    upd = ", ".join("%s=excluded.%s" % (f, f) for f in _FIELDS if f != "id")
+    sql = ("INSERT INTO jobs (%s, updated) VALUES (%s, ?) "
+           "ON CONFLICT(id) DO UPDATE SET %s, updated=excluded.updated"
+           % (cols, marks, upd))
+    now = time.time()
+    try:
+        with _DB_LOCK:
+            con = _db()
+            try:
+                con.executemany(sql, [r + [now] for r in rows])
+                # 只留最近 N 条，DB 不会无限长
+                con.execute("DELETE FROM jobs WHERE id IN "
+                            "(SELECT id FROM jobs ORDER BY COALESCE(t_end, t) DESC "
+                            " LIMIT -1 OFFSET ?)", (_KEEP_ROWS,))
+                con.commit()
+            finally:
+                con.close()
+    except Exception as e:
+        print("[video] 任务落盘失败: %s: %s" % (type(e).__name__, str(e)[:150]),
+              file=sys.stderr, flush=True)
+
+
+def _flusher():
+    while True:
+        time.sleep(_FLUSH_EVERY)
+        _flush()
+
+
+def _ensure_flusher():
+    global _FLUSH_THREAD
+    if _FLUSH_THREAD is not None:
+        return
+    _db_init()
+    _FLUSH_THREAD = threading.Thread(target=_flusher, name="job-flusher", daemon=True)
+    _FLUSH_THREAD.start()
+
+
 def _mem_available_mb():
     """读 /proc/meminfo 的 MemAvailable，非 Linux 或读不到时返回大数（不拦截）。"""
     try:
@@ -1125,7 +1228,14 @@ def _mem_available_mb():
 def _set(jid, **kw):
     with _JOBS_LOCK:
         if jid in JOBS:
+            # done 是终态，顺手补一个结束时间：前端据此判断「最近失败」，
+            # 恢复出来的中断任务也靠它排到列表末尾（否则 t 是旧的，会被截掉）
+            if kw.get("done") and "t_end" not in kw:
+                kw["t_end"] = time.time()
             JOBS[jid].update(kw)
+            _DIRTY.add(jid)
+    if kw.get("done"):
+        _flush({jid})      # 终态立即落盘，进程被 kill 也不会丢结论
 
 
 def get_job(jid):
@@ -1146,7 +1256,7 @@ def list_jobs(user, done_limit=3):
     with _JOBS_LOCK:
         items = [dict(j) for j in JOBS.values() if j.get("user") == user]
         running = set(RUNNING)
-    items.sort(key=lambda j: j.get("t", 0))
+    items.sort(key=lambda j: j.get("t_end") or j.get("t", 0))
     pending = [j for j in items if not j.get("done")]
     ahead = 0
     for j in pending:
@@ -1173,11 +1283,17 @@ def create_job(user, title_hint="", series=""):
         JOBS[jid] = {"id": jid, "user": user, "stage": "准备中", "step": 0, "total": 0,
                      "done": False, "err": None, "note": None, "title": title_hint or "",
                      "series": series or "", "method": "", "duration": "", "elapsed": 0,
-                     "t": datetime.now().timestamp()}
+                     "t": datetime.now().timestamp(), "t_end": 0.0,
+                     "url": "", "file_path": ""}
+    _ensure_flusher()
+    _flush({jid})     # 创建即落盘，重启后至少能知道「有过这么个任务」
     return jid
 
 
 def launch(jid, url=None, file_path=None):
+    # 记下来源。以前 JOBS 里只有标题，重启后根本说不清是哪个视频丢的；
+    # 也只有存了 url 以后才可能做「重试」。
+    _set(jid, url=url or "", file_path=str(file_path) if file_path else "")
     threading.Thread(target=_run, args=(jid, url, file_path), daemon=True).start()
     return jid
 
@@ -1189,6 +1305,111 @@ def start_job(user, url=None, file_path=None, title_hint=None, series=""):
 
 def job_workdir(jid):
     return WORK_ROOT / jid
+
+
+def _row_to_job(r):
+    """DB 行（dict）→ 内存 job，字段与 create_job 保持一致。"""
+    return {
+        "id": r["id"], "user": r.get("user"), "title": r.get("title") or "",
+        "series": r.get("series") or "", "stage": r.get("stage") or "",
+        "step": r.get("step") or 0, "total": r.get("total") or 0,
+        "done": bool(r.get("done")), "err": r.get("err"), "note": r.get("note"),
+        "method": r.get("method") or "", "duration": r.get("duration") or "",
+        "elapsed": r.get("elapsed") or 0, "t": r.get("t") or 0,
+        "t_end": r.get("t_end") or 0, "url": r.get("url") or "",
+        "file_path": r.get("file_path") or "",
+    }
+
+
+def recover_jobs():
+    """服务启动时调一次：把上次没跑完的任务标失败，清掉残留工作目录。
+
+    返回被标记的任务数。
+
+    **只能在进程启动阶段调用**（web.py 的 lifespan）。运行期间调会误标正在跑
+    的任务、误删它们的工作目录。
+
+    为什么标失败而不是自动续跑：
+      - 上传的源文件在 work 目录里，_run 的 finally 会整个删掉，重启后文件没了
+      - 即使 URL 任务能重下，ASR 那笔钱也已经花过，重跑等于再花一次
+      - 一个「明确失败 + 中断在哪一步」的记录，比一个悄悄重跑、进度倒退的任务有用
+    """
+    _db_init()
+    now = time.time()
+    try:
+        with _DB_LOCK:
+            con = _db()
+            try:
+                rows = [dict(r) for r in
+                        con.execute("SELECT * FROM jobs WHERE done=0 ORDER BY t").fetchall()]
+            finally:
+                con.close()
+    except Exception as e:
+        print("[video] 读取历史任务失败，跳过恢复: %s: %s"
+              % (type(e).__name__, str(e)[:150]), file=sys.stderr, flush=True)
+        rows = []
+
+    revived = []
+    for r in rows:
+        old_stage = (r.get("stage") or "").strip() or "准备中"
+        j = _row_to_job(r)
+        j.update({
+            "stage": "失败",
+            "done": True,
+            "err": "服务重启中断（中断时：%s）" % old_stage,
+            "elapsed": round(now - (r.get("t") or now), 1),
+            "t_end": now,      # 排到列表末尾，重启后第一眼就能看到这条
+        })
+        revived.append(j)
+    if revived:
+        with _JOBS_LOCK:
+            for j in revived:
+                JOBS[j["id"]] = j
+                _DIRTY.add(j["id"])
+        _flush()               # 失败态立刻写回，下回启动不会重复标
+
+    # 把最近 10 分钟内的失败记录也装回内存。否则会出现这种死角：
+    # 「中断 → 重启（内存里有）→ 用户还没看 → 又重启一次」，
+    # 第二次启动时 DB 里已经没有 done=0 了，提示就永远消失了。
+    # 只捞失败的、且限制时间窗，不会把历史成功任务灌进来刷屏。
+    restored = 0
+    try:
+        with _DB_LOCK:
+            con = _db()
+            try:
+                recent = [dict(r) for r in con.execute(
+                    "SELECT * FROM jobs WHERE err IS NOT NULL AND t_end > ? "
+                    "ORDER BY t_end DESC LIMIT 5", (now - 600,)).fetchall()]
+            finally:
+                con.close()
+    except Exception:
+        recent = []
+    with _JOBS_LOCK:
+        for r in recent:
+            if r["id"] in JOBS:
+                continue
+            JOBS[r["id"]] = _row_to_job(r)
+            restored += 1
+
+    # 清孤儿工作目录：11-25 那次重启后 video_work 里一直挂着个空目录，就是它。
+    # RUNNING 为空说明是启动阶段，可以安全全清；非空（误调）则跳过活跃任务。
+    removed = 0
+    with _JOBS_LOCK:
+        alive = set(RUNNING)
+    try:
+        if WORK_ROOT.exists():
+            for d in WORK_ROOT.iterdir():
+                if d.is_dir() and d.name not in alive:
+                    shutil.rmtree(d, ignore_errors=True)
+                    removed += 1
+    except Exception:
+        pass
+
+    if revived or restored or removed:
+        print("[video] 启动恢复：%d 个中断任务标记失败，%d 条近期失败记录已载入，"
+              "清理 %d 个残留工作目录" % (len(revived), restored, removed),
+              file=sys.stderr, flush=True)
+    return len(revived)
 
 
 def _run(jid, url, file_path):

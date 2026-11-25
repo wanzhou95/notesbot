@@ -222,6 +222,45 @@ def cmd_feishu_bind(args):
     print("文件：%s" % feishu.identity_path())
 
 
+def cmd_video_jobs(args):
+    """查看持久化的视频任务（重启也不丢），默认只看未完成与最近的失败。"""
+    import sqlite3
+    from config import DATA_DIR
+    db = DATA_DIR / "video_jobs.db"
+    if not db.exists():
+        print("还没有任务记录（%s 不存在）" % db)
+        return
+    con = sqlite3.connect(str(db))
+    con.row_factory = sqlite3.Row
+    try:
+        sql = "SELECT * FROM jobs"
+        cond, params = [], []
+        if args.user:
+            cond.append("user=?")
+            params.append(args.user)
+        if not args.all:
+            cond.append("(done=0 OR err IS NOT NULL)")
+        if cond:
+            sql += " WHERE " + " AND ".join(cond)
+        sql += " ORDER BY COALESCE(t_end, t) DESC LIMIT ?"
+        params.append(args.limit)
+        rows = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+    if not rows:
+        print("没有符合条件的任务")
+        return
+    print("%-14s %-8s %-6s %-28s %s" % ("时间", "账号", "状态", "阶段", "标题"))
+    for r in rows:
+        import datetime as _dt
+        ts = r["t_end"] or r["t"] or 0
+        when = _dt.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S") if ts else "-"
+        state = "完成" if r["done"] and not r["err"] else ("失败" if r["err"] else "进行中")
+        stage = (r["err"] or r["stage"] or "")[:26]
+        print("%-14s %-8s %-6s %-28s %s"
+              % (when, r["user"] or "-", state, stage, (r["title"] or r["id"])[:40]))
+
+
 def cmd_migrate(args):
     """把旧的 _project.md 迁移成 <任务名>.md（Obsidian 双链前提）。"""
     import tasks
@@ -321,6 +360,11 @@ def main():
     fb.add_argument("open_id", help="飞书的 open_id，以 ou_ 开头")
     fb.add_argument("user", help="本地账号名（other / wanzhou / xuyingsi ...）")
 
+    vj = sub.add_parser("video-jobs", help="查看持久化的视频任务（含重启中断的）")
+    vj.add_argument("--user", default=None)
+    vj.add_argument("--limit", type=int, default=20)
+    vj.add_argument("--all", action="store_true", help="含已成功的任务")
+
     args = p.parse_args()
     if not args.cmd:
         p.print_help()
@@ -329,7 +373,8 @@ def main():
      "list": cmd_list, "reindex": cmd_reindex, "index": cmd_index, "lint": cmd_lint,
      "migrate": cmd_migrate, "digest": cmd_digest, "persona-list": cmd_persona_list,
      "persona-index": cmd_persona_index, "persona-stats": cmd_persona_stats,
-     "video-index": cmd_video_index, "feishu-status": cmd_feishu_status,
+     "video-index": cmd_video_index, "video-jobs": cmd_video_jobs,
+     "feishu-status": cmd_feishu_status,
      "feishu-bind": cmd_feishu_bind}[args.cmd](args)
 
 

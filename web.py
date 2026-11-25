@@ -2,7 +2,9 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import (FastAPI, Request, HTTPException, UploadFile, File, Form,
@@ -19,7 +21,24 @@ from config import ENV, NOTES_ROOT, DATA_DIR
 from graph import build_graph, llm
 from llm import load_model_settings, save_model_settings
 
-app = FastAPI(title="NotesBot-Web")
+
+@asynccontextmanager
+async def _lifespan(_app):
+    """启动阶段：把上次没跑完的视频任务标为失败，并清掉残留工作目录。
+
+    这是唯一安全的窗口——此时还没有任何任务在跑，不会误伤活跃任务。
+    启动期同步 IO（sqlite + 删目录）只有几十毫秒，不值得为它引入线程池。
+    """
+    try:
+        import video
+        video.recover_jobs()
+    except Exception as e:
+        print("[startup] 视频任务恢复失败: %s: %s" % (type(e).__name__, str(e)[:200]),
+              file=sys.stderr, flush=True)
+    yield
+
+
+app = FastAPI(title="NotesBot-Web", lifespan=_lifespan)
 GRAPH = build_graph()
 
 SESSIONS = {}  # token -> {"user": ..., "exp": ...}

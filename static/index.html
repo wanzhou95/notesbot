@@ -190,7 +190,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v20</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v21</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -1017,7 +1017,10 @@ window.renderVidJobs = function(){
   if(!wrap || !el){ return; }
   var now = Date.now() / 1000;
   var jobs = (window.vidJobs || []).filter(function(j){
-    if(j.done){ return !!j.err && (now - (j.t || 0) < 600); }   // 失败只显示最近 10 分钟
+    // 失败只显示最近 10 分钟。用 t_end（结束时间）而不是 t（创建时间）：
+    // 服务重启后被标记为中断的任务，t 可能是一小时前创建的排队任务，用 t 会被直接过滤掉，
+    // 用户就永远看不到「重启把任务吃了」这条提示。
+    if(j.done){ return !!j.err && (now - (j.t_end || j.t || 0) < 600); }
     return true;
   });
   if(!jobs.length){ wrap.style.display = 'none'; el.innerHTML = ''; return; }
