@@ -333,6 +333,35 @@ def _text_of(message: dict) -> str:
     return _MENTION_RE.sub("", str(t)).strip()
 
 
+# 发这几个词就给网页入口。做成快捷回复而不是走 graph，有两个原因：
+# 1) 「打开」这类词进 graph 会被当普通笔记存进库里，纯属污染；
+# 2) 这是「给我个门」的低延迟需求，没必要绕一圈模型。
+QUICK_WEB_WORDS = {"打开", "网址", "网页", "入口", "链接", "打开知识库", "打开应用", "app"}
+
+
+def web_url(base_url: str = "") -> str:
+    """网页入口地址。
+
+    优先 `FEISHU_WEB_URL`（.env），否则用调用方传进来的公开地址（来自请求）。
+    **域名不写进代码**：既避免泄露，也免得换域名要改源码。
+    """
+    u = cfg("FEISHU_WEB_URL") or base_url
+    return u.rstrip("/") + "/" if u else ""
+
+
+def quick_reply(text: str, base_url: str = "") -> Optional[str]:
+    """命中快捷词就返回要回的内容，否则 None。"""
+    t = (text or "").strip().strip("？?。.!！")
+    if t.lower() not in QUICK_WEB_WORDS:
+        return None
+    u = web_url(base_url)
+    if not u:
+        return None
+    return ("知识库网页：\n%s\n\n"
+            "在飞书里点这个链接，会用你的飞书身份自动登录，不用输密码。\n"
+            "建议把它收藏/置顶，以后一点就进。" % u)
+
+
 def log_unknown(open_id: str, preview: str) -> None:
     """未授权的 open_id 单独记一行，方便取证和绑定。"""
     try:
@@ -344,8 +373,12 @@ def log_unknown(open_id: str, preview: str) -> None:
         pass
 
 
-def parse_event(raw: dict) -> tuple[dict, Optional[tuple[str, str, str]]]:
+def parse_event(raw: dict, base_url: str = "") -> tuple[dict, Optional[tuple[str, str, str]]]:
     """解析一次回调。
+
+    Args:
+        raw: 飞书推来的原始 body。
+        base_url: 本站公开地址（由路由从请求取），只用于拼「打开」命令回给用户的链接。
 
     Returns:
         (要回给飞书的 body, 待执行任务 (user, chat_id, text) 或 None)。
@@ -402,6 +435,13 @@ def parse_event(raw: dict) -> tuple[dict, Optional[tuple[str, str, str]]]:
     text = _text_of(message)
     if not text:
         return {"code": 0, "msg": "empty"}, None
+
+    # 快捷回复：要网页入口。不走 graph，因为这不是「记东西」而是「给我个门」，
+    # 而且这类关键词进 graph 会被当成笔记存下来，平白污染库。
+    quick = quick_reply(text, base_url)
+    if quick:
+        send_text(chat_id, quick)
+        return {"code": 0, "msg": "quick"}, None
 
     return {"code": 0, "msg": "ok"}, (user, chat_id, text)
 

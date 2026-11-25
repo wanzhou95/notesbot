@@ -97,7 +97,7 @@ def feishu_event(request: Request, body: dict, bg: BackgroundTasks):
     这个函数必须秒回：飞书 3 秒超时会重推，所以真正的处理丢进 BackgroundTasks
     （传同步函数，Starlette 会放进线程池，不堵事件循环）。
     """
-    reply, job = feishu.parse_event(body)
+    reply, job = feishu.parse_event(body, base_url=str(request.base_url))
     if job:
         bg.add_task(feishu.run_job, GRAPH, *job)
     return reply
