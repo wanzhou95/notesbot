@@ -274,15 +274,19 @@ def parse_event(raw: dict) -> tuple[dict, Optional[tuple[str, str, str]]]:
         return {"code": 400,
                 "msg": "已开启加密策略。请到飞书后台「事件与回调 → 加密策略」关闭后重试"}, None
 
+    # URL 校验：飞书保存回调地址时的一次性请求。**故意放在验签之前**。
+    # 它只是把对方自己发来的 challenge 原样回声，不碰任何数据、不泄露任何东西；
+    # 而真正能写笔记的是事件，那一层照样严格验签。若先验签，一旦飞书这次
+    # 校验请求的 token 字段与预期有出入，等于自己把回调地址堵死 —— 这是配置
+    # 阶段最容易卡住的一步，不值得为它冒险。
+    if raw.get("type") == "url_verification" or raw.get("challenge"):
+        return {"challenge": raw.get("challenge", "")}, None
+
     # 验签：v1 是 body.token，v2 是 header.token
     token = str(raw.get("token") or (raw.get("header") or {}).get("token") or "")
     expect = cfg("FEISHU_VERIFY_TOKEN")
     if expect and not hmac.compare_digest(token, expect):
         return {"code": 401, "msg": "verification token 不匹配"}, None
-
-    # URL 校验：飞书保存回调地址时的一次性请求
-    if raw.get("type") == "url_verification" or raw.get("challenge"):
-        return {"challenge": raw.get("challenge", "")}, None
 
     header = raw.get("header") or {}
     if header.get("event_type") != "im.message.receive_v1":
