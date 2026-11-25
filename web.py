@@ -86,6 +86,24 @@ def health():
     return {"ok": True}
 
 
+# ---- 公安联网备案图标 ----
+# 官方要求「图标在前、备案号在右」。图标文件从公安备案平台下载后放进 static/，
+# 支持 png / gif / jpg 任一格式；这里每个请求实时判断文件是否存在，替换图标不用重启。
+BEIAN_ICONS = (("beian.png", "image/png"),
+               ("beian.gif", "image/gif"),
+               ("beian.jpg", "image/jpeg"))
+
+
+@app.get("/beian-ico")
+def beian_icon():
+    for fn, media in BEIAN_ICONS:
+        p = STATIC_DIR / fn
+        if p.is_file():
+            return FileResponse(str(p), media_type=media,
+                                headers={"Cache-Control": "public, max-age=3600"})
+    return Response(status_code=404)
+
+
 @app.get("/")
 def root(request: Request):
     if not check_login(request):
