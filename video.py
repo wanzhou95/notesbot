@@ -965,6 +965,119 @@ def list_series(user):
                   if p.is_dir() and not p.name.startswith("."))
 
 
+# ---------------- 索引页生成（给人看的 Obsidian 导航层，不参与检索） ----------------
+
+_LINK_UNSAFE = set("[]#|^")
+
+
+def _is_video_note(path):
+    """只看前 400 字节判断 type，避免为过滤索引文件去读整篇。
+
+    persona.py 里有一份同样的实现：那边是为了不引入 video 的重依赖才独立的，
+    改判断逻辑时两处要一起改。
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            head = f.read(400)
+    except Exception:
+        return False
+    return bool(re.search(r"(?m)^type:\s*video\s*$", head))
+
+
+def _note_link(stem):
+    """文件名 → Obsidian 可点的链接。
+
+    按**真实文件名**建链（不是 frontmatter 的 title）：save_note 遇到重名会存成
+    `X-2.md`，而 frontmatter 里 title 仍是 X，用 title 建链会指向不存在的文件。
+    文件名含 [] # | ^ 时双链会断，退回 markdown 链接，显示文本里的方括号要转义。
+    """
+    if any(c in _LINK_UNSAFE for c in stem):
+        text = stem.replace("[", "\\[").replace("]", "\\]")
+        return "[%s](<%s.md>)" % (text, stem)
+    return "[[%s]]" % stem
+
+
+def _series_entries(sdir):
+    """某系列下的视频笔记 → [{stem, duration, created}]。"""
+    out = []
+    for p in sdir.glob("*.md"):
+        if not _is_video_note(p):
+            continue
+        note = parse_note(p)
+        if not note:
+            continue
+        created = (note.get("created") or "")[:10] or "未知日期"
+        out.append({"stem": p.stem, "duration": note.get("duration") or "",
+                    "created": created})
+    return out
+
+
+def render_series_index(user, series):
+    """重建 `<系列>/<系列>索引.md`。返回条数（目录不存在返回 -1）。"""
+    base = user_dir(user) / VIDEO_DIR
+    sdir = base / series
+    if not sdir.is_dir():
+        return -1
+    entries = _series_entries(sdir)
+    groups = {}
+    for e in entries:
+        groups.setdefault(e["created"], []).append(e)
+    lines = [
+        "---",
+        "title: %s索引" % series,
+        "type: index",
+        "series: %s" % series,
+        "updated: %s" % datetime.now().strftime("%Y-%m-%d"),
+        "---",
+        "",
+        "# %s · 视频速览索引" % series,
+        "",
+        "> 共 **%d** 条 ｜ 返回 [[视频字幕总览]]" % len(entries),
+        "",
+    ]
+    for date in sorted(groups, reverse=True):
+        lines.append("## %s" % date)
+        for e in sorted(groups[date], key=lambda x: x["stem"]):
+            dur = (" ｜ `%s`" % e["duration"]) if e["duration"] else ""
+            lines.append("- %s%s" % (_note_link(e["stem"]), dur))
+        lines.append("")
+    (sdir / ("%s索引.md" % series)).write_text("\n".join(lines), encoding="utf-8")
+    return len(entries)
+
+
+def render_overview(user):
+    """重建 `视频字幕总览.md`（系列汇总表）。返回 (系列数, 总条数)。"""
+    base = user_dir(user) / VIDEO_DIR
+    if not base.is_dir():
+        return 0, 0
+    rows = []
+    for sdir in sorted(p for p in base.iterdir()
+                       if p.is_dir() and not p.name.startswith(".")):
+        n = render_series_index(user, sdir.name)
+        if n >= 0:
+            rows.append((sdir.name, n))
+    rows.sort(key=lambda x: (-x[1], x[0]))
+    total = sum(n for _, n in rows)
+    lines = [
+        "---",
+        "title: 视频字幕总览",
+        "type: index",
+        "updated: %s" % datetime.now().strftime("%Y-%m-%d"),
+        "---",
+        "",
+        "# 视频字幕总览",
+        "",
+        "> 共 **%d** 条速览，%d 个系列。本页只做导航，不存内容。" % (total, len(rows)),
+        "",
+        "| 系列 | 条数 | 索引 |",
+        "|---|---|---|",
+    ]
+    for name, n in rows:
+        lines.append("| %s | %d | [[%s索引]] |" % (name, n, name))
+    (base / "视频字幕总览.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return len(rows), total
+
+
 def find_by_source(user, source):
     """同一个链接不重复花钱。
 
@@ -1164,6 +1277,12 @@ def _run(jid, url, file_path):
             _set(jid, stage="完成", done=True, note=rel, method=method,
                  title=meta["title"], duration=_ts(meta.get("duration") or 0),
                  elapsed=round((datetime.now() - t0).total_seconds(), 1))
+            # 索引页跟着刷新。以前这两份索引靠手动重建，11-25 批量导入后姜胡说索引
+            # 就一直停在 205/466。刷新失败不能让任务判失败，所以单独吞掉异常。
+            try:
+                render_overview(user)
+            except Exception:
+                pass
     except Exception as e:
         _set(jid, stage="失败", done=True, err=str(e)[:300],
              elapsed=round((datetime.now() - t0).total_seconds(), 1))

@@ -168,6 +168,25 @@ def cmd_persona_stats(args):
     print("%s：卡片 %d 篇、片段 %d 块 → %s" % (scope, c["files"], c["chunks"], store.path))
 
 
+def cmd_video_index(args):
+    """重建视频系列的 `xx索引.md` 与 `视频字幕总览.md`（Obsidian 导航层，不参与检索）。"""
+    import video
+    names = [args.name] if args.name else [r["name"] for r in users.list_users()]
+    for name in names:
+        try:
+            if args.series:
+                n = video.render_series_index(name, args.series)
+                if n < 0:
+                    print("%s：系列 %s 不存在" % (name, args.series))
+                else:
+                    print("%s / %s：%d 条 → %s索引.md" % (name, args.series, n, args.series))
+            else:
+                k, total = video.render_overview(name)
+                print("%s：%d 个系列，共 %d 条 → 各系列索引 + 视频字幕总览.md" % (name, k, total))
+        except Exception as e:
+            print("%s：失败 %s" % (name, e))
+
+
 def cmd_migrate(args):
     """把旧的 _project.md 迁移成 <任务名>.md（Obsidian 双链前提）。"""
     import tasks
@@ -258,6 +277,10 @@ def main():
     ps.add_argument("--series", default=None)
     ps.add_argument("--db", default=None)
 
+    vi = sub.add_parser("video-index", help="重建视频索引页（xx索引.md / 视频字幕总览.md）")
+    vi.add_argument("name", nargs="?", default=None)
+    vi.add_argument("--series", default=None, help="只重建某个系列")
+
     args = p.parse_args()
     if not args.cmd:
         p.print_help()
@@ -265,7 +288,8 @@ def main():
     {"init": cmd_init, "adduser": cmd_adduser, "passwd": cmd_passwd,
      "list": cmd_list, "reindex": cmd_reindex, "index": cmd_index, "lint": cmd_lint,
      "migrate": cmd_migrate, "digest": cmd_digest, "persona-list": cmd_persona_list,
-     "persona-index": cmd_persona_index, "persona-stats": cmd_persona_stats}[args.cmd](args)
+     "persona-index": cmd_persona_index, "persona-stats": cmd_persona_stats,
+     "video-index": cmd_video_index}[args.cmd](args)
 
 
 if __name__ == "__main__":
