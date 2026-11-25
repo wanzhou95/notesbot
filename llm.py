@@ -86,6 +86,11 @@ class LLMRouter:
         # （实测 glm-5.3-flash 给 30 时 content=""、finish_reason=length），
         # 会被误判成失败并降级。所以对思考模型强制拉到这个下限。
         self.think_min_tokens = int(ENV.get("MODEL_THINK_MIN_TOKENS", "300"))
+        # 截断重试：思考模型偶尔会把预算耗在思考上，正文写到一半就 finish_reason=length。
+        # 这种内容非空但残缺，原来会静默返回半句话（例如笔记的「一句话总结」被截断）。
+        # 对 max_tokens ≥ 该阈值的调用，翻倍重试一次；短调用（如 30 token 分类）不重试。
+        self.length_retry_min = int(ENV.get("MODEL_LENGTH_RETRY_MIN", "400"))
+        self.length_retry_cap = int(ENV.get("MODEL_LENGTH_RETRY_CAP", "8000"))
         self.client = httpx.Client(timeout=120)
 
     def _call(self, base, key, model, messages, max_tokens, glm=False):
@@ -94,26 +99,41 @@ class LLMRouter:
         # 结果是配置里排第一的 5.3 永远轮不到。这里统一保底。
         if glm and model in self.always_think and max_tokens < self.think_min_tokens:
             max_tokens = self.think_min_tokens
-        body = {"model": model, "messages": messages, "max_tokens": max_tokens}
-        if glm and self.disable_thinking and model not in self.always_think:
-            body["thinking"] = {"type": "disabled"}
-        r = self.client.post(
-            base + "/chat/completions",
-            headers={"Authorization": "Bearer " + key},
-            json=body,
-        )
-        if r.status_code != 200:
-            raise RuntimeError("HTTP %s %s" % (r.status_code, r.text[:100]))
-        data = r.json()
-        choice = data["choices"][0]
-        msg = choice.get("message") or {}
-        content = (msg.get("content") or "").strip()
-        if not content:
-            # 绝不能把 reasoning_content 当正文返回：那是模型的思考过程，
-            # 混进结果会污染笔记/技能卡。宁可抛错让降级链换下一个模型。
-            raise RuntimeError("模型无正文输出（finish_reason=%s，通常是想太多把 token 用光了）"
-                               % choice.get("finish_reason"))
-        return content
+        retried = False
+        while True:
+            body = {"model": model, "messages": messages, "max_tokens": max_tokens}
+            if glm and self.disable_thinking and model not in self.always_think:
+                body["thinking"] = {"type": "disabled"}
+            r = self.client.post(
+                base + "/chat/completions",
+                headers={"Authorization": "Bearer " + key},
+                json=body,
+            )
+            if r.status_code != 200:
+                raise RuntimeError("HTTP %s %s" % (r.status_code, r.text[:100]))
+            data = r.json()
+            choice = data["choices"][0]
+            msg = choice.get("message") or {}
+            content = (msg.get("content") or "").strip()
+            finish = choice.get("finish_reason")
+            if not content:
+                # 绝不能把 reasoning_content 当正文返回：那是模型的思考过程，
+                # 混进结果会污染笔记/技能卡。宁可抛错让降级链换下一个模型。
+                raise RuntimeError("模型无正文输出（finish_reason=%s，通常是想太多把 token 用光了）"
+                                   % finish)
+            # 正文非空但被截断：多半是思考吃掉了预算，翻倍再来一次。
+            # 短调用（归类只给 30 token）不在此列——那里的截断属于正常行为。
+            if (finish == "length" and not retried
+                    and max_tokens >= self.length_retry_min
+                    and max_tokens < self.length_retry_cap):
+                retried = True
+                new_max = min(max_tokens * 2, self.length_retry_cap)
+                log_fail("glm" if glm else "ds", model, "truncated",
+                         "输出被截断（正文 %d 字），max_tokens %d → %d 重试一次"
+                         % (len(content), max_tokens, new_max))
+                max_tokens = new_max
+                continue
+            return content
 
     def chat_messages(self, messages, tier="main", max_tokens=1500, models=None):
         # models: 前置的付费旗舰模型（按优先级），全部失败后回落标准链路
