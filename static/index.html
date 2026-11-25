@@ -41,9 +41,12 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .tabs button:hover{color:var(--tx);background:var(--bg)}
 .tabs button.on{background:var(--acc);color:#fff;box-shadow:0 2px 8px rgba(109,90,230,.30)}
 .ver{font-size:11px;color:var(--mut-2);margin-left:8px;font-variant-numeric:tabular-nums}
-.icpfoot{text-align:center;padding:4px 0 26px;font-size:12px;color:var(--mut-2)}
-.icpfoot a{color:var(--mut);text-decoration:none}
+/* 页脚备案：ICP + 公安联网备案，两个号都在，链接可点，窄屏自动折行 */
+.icpfoot{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:0 9px;padding:18px 16px 0;font-size:12px;line-height:1.9;color:var(--mut-2);text-align:center}
+.icpfoot a{color:var(--mut);text-decoration:none;word-break:break-all;transition:color .15s var(--ease)}
 .icpfoot a:hover{color:var(--acc);text-decoration:underline}
+.icpfoot .sep{color:var(--line-2);user-select:none}
+@media (max-width:420px){.icpfoot{font-size:11px;gap:0 6px;padding-top:14px}}
 .exp{color:var(--acc);font-size:13px;text-decoration:none;margin-right:10px}.exp:hover{text-decoration:underline}
 .upitem{border:1px solid var(--line);border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;background:var(--card)}
 .upitem .nm{font-size:13px;word-break:break-all;font-weight:500}
@@ -181,7 +184,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v15</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v16</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -363,7 +366,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
     </div>
   </div>
 </div>
-<div class="icpfoot"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备2026018624号-2</a></div>
+<footer class="icpfoot">
+  <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备2026018624号-2</a>
+  <span class="sep" aria-hidden="true">·</span>
+  <a href="https://beian.mps.gov.cn/#/query/webSearch?code=35092202000227" target="_blank" rel="noopener noreferrer">闽公网安备35092202000227号</a>
+</footer>
 </div>
 <div id="viewer" class="viewer" onclick="if(event.target===this)closeNote()">
   <div class="vbox">
