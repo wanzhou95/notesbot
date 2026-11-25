@@ -51,8 +51,18 @@ VIDEO_DIR = ENV.get("VIDEO_DIR", "03-Resources/视频字幕").strip("/")
 WORK_ROOT = DATA_DIR / "video_work"
 MAX_MINUTES = int(ENV.get("VIDEO_MAX_MIN", "180") or 180)
 ASR_MODEL = ENV.get("MODEL_ASR", "glm-asr-2512").strip() or "glm-asr-2512"
-# 语音识别供应商：deepseek（默认，按小时计费更便宜）/ glm（智谱，支持 prompt 上下文）
-ASR_PROVIDER = (ENV.get("ASR_PROVIDER", "deepseek") or "deepseek").strip().lower()
+# 语音识别供应商：
+#   sensevoice（默认）—— 本地 sherpa-onnx 跑 SenseVoice-Small int8，0 元/RTF≈0.06/峰值约 421MB
+#   deepseek —— 云端按小时计费（约 0.41 元/小时），本地不可用时自动兜底
+#   glm —— 智谱，支持把上一段当 prompt（需有资源包）
+ASR_PROVIDER = (ENV.get("ASR_PROVIDER", "sensevoice") or "sensevoice").strip().lower()
+# SenseVoice 模型目录（需 model.int8.onnx + tokens.txt，共约 230MB）
+SENSEVOICE_DIR = Path(ENV.get("SENSEVOICE_DIR") or (DATA_DIR / "models" / "sensevoice"))
+SENSEVOICE_THREADS = max(1, int(ENV.get("SENSEVOICE_THREADS", "2") or 2))
+# 加载本地模型前要求的最低可用内存（MB）。实测单进程峰值约 421MB，留出余量给 web 本身
+SENSEVOICE_MIN_FREE_MB = int(ENV.get("SENSEVOICE_MIN_FREE_MB", "520") or 520)
+# 本地识别同时只允许 1 段（421MB × N 会把 1.9G 机器拖进 OOM）
+ASR_CONCURRENCY = max(1, int(ENV.get("ASR_CONCURRENCY", "1") or 1))
 CHUNK_SEC = 28
 
 
@@ -561,14 +571,100 @@ def _asr_glm(path, prev_text=""):
     return re.sub(r"\s+", " ", text)
 
 
-def asr_file(path, prev_text=""):
-    """单段音频 → 文字。由 ASR_PROVIDER 决定用哪家：
+# ---- 本地语音识别：SenseVoice-Small（sherpa-onnx / int8，无需 torch、无需联网）----
+_sv_lock = threading.Lock()
+_sv_rec = None
+_sv_load_err = ""
+_ASR_SLOT = threading.Semaphore(ASR_CONCURRENCY)   # 本地识别限流，防内存叠加
+FALLBACK_LOG = DATA_DIR / "asr_fallback.log"
 
-    - deepseek（默认）：按小时计费更便宜，无 prompt 参数，语言自动检测
+
+def _sensevoice_rec():
+    """懒加载识别器：首次约 1.6 秒、常驻约 330MB，之后复用。"""
+    global _sv_rec, _sv_load_err
+    if _sv_rec is not None:
+        return _sv_rec
+    with _sv_lock:
+        if _sv_rec is not None:
+            return _sv_rec
+        if _sv_load_err:
+            raise RuntimeError(_sv_load_err)
+        try:
+            import sherpa_onnx
+        except Exception as e:
+            _sv_load_err = "未安装 sherpa-onnx（%s）" % e
+            raise RuntimeError(_sv_load_err)
+        model = SENSEVOICE_DIR / "model.int8.onnx"
+        tokens = SENSEVOICE_DIR / "tokens.txt"
+        if not model.is_file() or not tokens.is_file():
+            _sv_load_err = "SenseVoice 模型缺失：%s（需 model.int8.onnx + tokens.txt）" % SENSEVOICE_DIR
+            raise RuntimeError(_sv_load_err)
+        try:
+            _sv_rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                model=str(model), tokens=str(tokens), num_threads=SENSEVOICE_THREADS,
+                use_itn=True, language="zh", debug=False)
+        except Exception as e:
+            _sv_load_err = "SenseVoice 初始化失败：%s" % e
+            raise RuntimeError(_sv_load_err)
+        return _sv_rec
+
+
+def _wav_samples(path):
+    """wav → (float 采样点, 采样率)。切片由 ffmpeg 保证 16k 单声道 s16le。"""
+    import array
+    import wave
+    with wave.open(str(path), "rb") as w:
+        sr, ch, raw = w.getframerate(), w.getnchannels(), w.readframes(w.getnframes())
+    a = array.array("h")
+    a.frombytes(raw)
+    if ch > 1:
+        a = a[::ch]
+    return [x / 32768.0 for x in a], sr
+
+
+def _asr_note_fallback(err):
+    """本地识别失败回落云端时留痕，便于回溯「这一段为什么走了云」。"""
+    try:
+        with open(FALLBACK_LOG, "a", encoding="utf-8") as f:
+            f.write("%s\tSenseVoice 本地失败，回落 DeepSeek\t%s\n"
+                    % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), str(err)[:200]))
+    except Exception:
+        pass
+
+
+def _asr_sensevoice(path):
+    """本地 SenseVoice-Small（int8）：0 元、RTF≈0.06、峰值约 421MB。"""
+    with _ASR_SLOT:
+        if _sv_rec is None:
+            avail = _mem_available_mb()
+            if avail < SENSEVOICE_MIN_FREE_MB:
+                raise RuntimeError("可用内存 %.0fMB < %dMB，本地识别暂不启动"
+                                   % (avail, SENSEVOICE_MIN_FREE_MB))
+        rec = _sensevoice_rec()
+        samples, sr = _wav_samples(path)
+        st = rec.create_stream()
+        st.accept_waveform(sr, samples)
+        rec.decode_stream(st)
+        return re.sub(r"\s+", " ", (st.result.text or "").strip())
+
+
+def asr_file(path, prev_text=""):
+    """单段音频 → 文字。由 ASR_PROVIDER 决定，默认本地 SenseVoice，失败自动回落云端。
+
+    - sensevoice（默认）：本地跑，0 成本；内存不足/模型缺失/异常时回落 DeepSeek
+    - deepseek：云端按小时计费，无 prompt 参数，语言自动检测
     - glm：支持把上一段当 prompt，术语/人名更连贯（需有额度）
     """
     if ASR_PROVIDER == "glm":
         return _asr_glm(path, prev_text)
+    if ASR_PROVIDER == "sensevoice":
+        try:
+            return _asr_sensevoice(path)
+        except AsrQuotaError:
+            raise
+        except Exception as e:
+            _asr_note_fallback(e)
+            return asr_deepseek(path)
     return asr_deepseek(path)
 
 
@@ -831,10 +927,10 @@ def find_by_source(user, source):
 
 JOBS = {}
 _JOBS_LOCK = threading.Lock()
-# 同时处理几个视频任务。默认 3：DeepSeek ASR 账号级 50 并发，3 个任务远没到顶；
-# 本机 2 核 1.9G，任务里的 ffmpeg 切片是 CPU 密集型，3 个已接近这台机器的舒适区，
-# 再往上要靠下面的内存闸门兜底。可用 VIDEO_CONCURRENCY 覆盖。
-MAX_CONCURRENT = max(1, int(ENV.get("VIDEO_CONCURRENCY", "3") or 3))
+# 同时处理几个视频任务。默认 1：本机 2 核 1.9G，本地 ASR 单进程峰值约 421MB，
+# 再加上 ffmpeg 切片是 CPU 密集型，并发跑只会互相拖慢并逼近 OOM。
+# 想放开用 VIDEO_CONCURRENCY 覆盖，但必须先确认内存余量。
+MAX_CONCURRENT = max(1, int(ENV.get("VIDEO_CONCURRENCY", "1") or 1))
 _QUEUE = threading.Semaphore(MAX_CONCURRENT)
 # 当前真正在跑的任务 id（区别于"在排队等信号量"的）
 RUNNING = set()
@@ -998,7 +1094,8 @@ def _run(jid, url, file_path):
                     src, work,
                     on_progress=lambda i, n: _set(jid, step=i, total=n,
                                                   stage="转写中 %d/%d 段" % (i, n)))
-                method = "%s ASR 转写" % ("GLM" if ASR_PROVIDER == "glm" else "DeepSeek")
+                _label = {"glm": "GLM", "sensevoice": "SenseVoice 本地"}.get(ASR_PROVIDER, "DeepSeek")
+                method = "%s ASR 转写" % _label
 
             _set(jid, stage="生成速览")
             summary = summarize(pairs)
