@@ -115,6 +115,59 @@ def cmd_lint(args):
             print("  %s 失败：%s" % (name, e))
 
 
+def cmd_persona_list(args):
+    """列出现有视频系列及索引状态。"""
+    import persona
+    names = [args.name] if args.name else [r["name"] for r in users.list_users()]
+    for name in names:
+        try:
+            rows = persona.list_series(name)
+        except Exception as e:
+            print("%s：读取失败 %s" % (name, e))
+            continue
+        if not rows:
+            print("%s：（没有视频系列目录）" % name)
+            continue
+        print("=== %s ===" % name)
+        for r in rows:
+            print("  %-20s 篇数 %-4d 已索引 %-4d %s" % (
+                r["name"], r["total"], r["indexed"],
+                "（完整）" if r["indexed"] == r["total"] else
+                ("（未建）" if not r["indexed"] else "（待补 %d）" % (r["total"] - r["indexed"]))))
+
+
+def cmd_persona_index(args):
+    """建某系列的人格索引（独立 vec_persona.db，不动主库 vec.db）。"""
+    import persona
+    name = args.name
+    if name not in config.load_users():
+        print("账号 %s 不存在" % name)
+        sys.exit(1)
+    series_list = [s.strip() for s in args.series.replace("，", ",").split(",") if s.strip()]
+    for series in series_list:
+        print("=== %s / %s ===" % (name, series), flush=True)
+        try:
+            res = persona.index_series(name, series, force=args.force,
+                                       db_path=args.db, verbose=not args.quiet)
+        except Exception as e:
+            print("  失败：%s" % e)
+            continue
+        print("  处理 %d 篇（跳过 %d / 共 %d），新增片段 %d" % (
+            res["files"], res["skipped"], res["total"], res["chunks"]))
+        for line in res["failed"]:
+            print("  ✗ %s" % line)
+        print("  库：%s" % res["db"])
+
+
+def cmd_persona_stats(args):
+    """看人格库里有几张卡、几个片段。"""
+    import persona
+    store = persona.PersonaStore(args.db)
+    c = store.count(args.series or None)
+    scope = args.series or "全部"
+    print("%s：卡片 %d 篇、片段 %d 块 → %s" % (scope, c["files"], c["chunks"], store.path))
+
+
 def cmd_migrate(args):
     """把旧的 _project.md 迁移成 <任务名>.md（Obsidian 双链前提）。"""
     import tasks
@@ -191,13 +244,28 @@ def main():
     d.add_argument("--limit", type=int, default=None, help="本次最多处理几个")
     d.add_argument("--dry", action="store_true", help="只列出待归纳项，不实际调用模型")
 
+    pl = sub.add_parser("persona-list", help="列出视频系列及人格索引状态")
+    pl.add_argument("name", nargs="?", default=None)
+
+    pi = sub.add_parser("persona-index", help="建人格索引（独立 vec_persona.db）")
+    pi.add_argument("name", help="账号名")
+    pi.add_argument("--series", required=True, help="系列目录名，多个用逗号分隔")
+    pi.add_argument("--force", action="store_true", help="忽略 mtime 全量重建")
+    pi.add_argument("--db", default=None, help="覆盖库路径（隔离测试用）")
+    pi.add_argument("--quiet", action="store_true", help="不逐篇打印")
+
+    ps = sub.add_parser("persona-stats", help="查看人格库规模")
+    ps.add_argument("--series", default=None)
+    ps.add_argument("--db", default=None)
+
     args = p.parse_args()
     if not args.cmd:
         p.print_help()
         sys.exit(0)
     {"init": cmd_init, "adduser": cmd_adduser, "passwd": cmd_passwd,
      "list": cmd_list, "reindex": cmd_reindex, "index": cmd_index, "lint": cmd_lint,
-     "migrate": cmd_migrate, "digest": cmd_digest}[args.cmd](args)
+     "migrate": cmd_migrate, "digest": cmd_digest, "persona-list": cmd_persona_list,
+     "persona-index": cmd_persona_index, "persona-stats": cmd_persona_stats}[args.cmd](args)
 
 
 if __name__ == "__main__":

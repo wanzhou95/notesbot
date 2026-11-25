@@ -882,6 +882,17 @@ def set_video_cookies(request: Request, body: dict):
     return {"ok": True}
 
 
+@app.get("/api/persona/list")
+def api_persona_list(request: Request):
+    """可选人格（= 视频系列目录）及索引状态，给问AI 页的选择器用。"""
+    u = require(request)
+    try:
+        import persona as persona_mod
+        return {"items": persona_mod.list_series(u)}
+    except Exception as e:
+        return {"items": [], "error": str(e)[:120]}
+
+
 @app.post("/api/ask")
 def ask(request: Request, body: dict):
     u = require(request)
@@ -889,6 +900,22 @@ def ask(request: Request, body: dict):
     if not q:
         return {"reply": ""}
     history = body.get("history") or []
+
+    # 人格模式：先走独立人格库（模拟某个作者回答）。语料没覆盖时不硬编，
+    # 落到下面的通用链路，并在回答前明确告知「这个人没讲过」。
+    persona_name = (body.get("persona") or "").strip()
+    fallback_note = ""
+    if persona_name:
+        try:
+            import persona as persona_mod
+            r = persona_mod.ask(u, persona_name, q, history=history)
+        except Exception:
+            r = {"handled": False}
+        if r.get("handled"):
+            return {"reply": r["answer"], "mode": "persona", "persona": persona_name,
+                    "level": r.get("level", 0), "sources": r.get("sources", [])}
+        fallback_note = "（这个问题 %s 的视频里没讲过，以下是通用回答）\n\n" % persona_name
+
     msgs = []
     # A 向召回：问 AI 时也带上库里已沉淀的技能卡（这是「自己的经验」而不是通用知识）
     import skills
@@ -908,7 +935,8 @@ def ask(request: Request, body: dict):
     s = load_model_settings()  # 设置页关掉的增强模型也一并拦截
     premium = [m for m in (body.get("models") or []) if m in PREMIUM and s["premium"].get(m, True)]
     ans = llm.chat_messages(msgs, tier="main", max_tokens=1500, models=premium)
-    return {"reply": ans}
+    return {"reply": fallback_note + ans, "mode": "general",
+            "persona": persona_name or ""}
 
 
 @app.post("/api/save-page")

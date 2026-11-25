@@ -93,7 +93,7 @@ class LLMRouter:
         self.length_retry_cap = int(ENV.get("MODEL_LENGTH_RETRY_CAP", "8000"))
         self.client = httpx.Client(timeout=120)
 
-    def _call(self, base, key, model, messages, max_tokens, glm=False):
+    def _call(self, base, key, model, messages, max_tokens, glm=False, temperature=None):
         # 思考模型（glm-5.3-flash）不支持关思考，且思考内容同样计入 max_tokens。
         # 上限给小了会出现「HTTP 200 但正文为空」，被上层当成失败降级，
         # 结果是配置里排第一的 5.3 永远轮不到。这里统一保底。
@@ -102,6 +102,10 @@ class LLMRouter:
         retried = False
         while True:
             body = {"model": model, "messages": messages, "max_tokens": max_tokens}
+            # temperature=None 时不传，保持各家默认，避免影响既有行为。
+            # 判定类调用传 0，否则同一问题会给出不同结论（实测档位会来回跳）。
+            if temperature is not None:
+                body["temperature"] = temperature
             if glm and self.disable_thinking and model not in self.always_think:
                 body["thinking"] = {"type": "disabled"}
             r = self.client.post(
@@ -169,8 +173,14 @@ class LLMRouter:
         messages.append({"role": "user", "content": prompt})
         return self.chat_messages(messages, tier=tier, max_tokens=max_tokens)
 
-    def chat_ordered(self, prompt, order, max_tokens=4000, system=None):
-        """按明确顺序尝试 order=[(provider, model), ...]，provider ∈ {ds, glm}。"""
+    def chat_ordered(self, prompt, order, max_tokens=4000, system=None, tier="digest",
+                     temperature=None):
+        """按明确顺序尝试 order=[(provider, model), ...]，provider ∈ {ds, glm}。
+
+        与 chat_messages 的区别：**不追加降级链**，只试 order 里给的模型。
+        适合「必须钉死一两个模型、延迟要可预期」的场景（如覆盖度判定）。
+        temperature 传 0 可让判定类调用稳定复现。
+        """
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -181,16 +191,18 @@ class LLMRouter:
                 if prov == "ds":
                     if not self.ds_key:
                         continue
-                    out = self._call(self.ds_url, self.ds_key, model, messages, max_tokens)
+                    out = self._call(self.ds_url, self.ds_key, model, messages, max_tokens,
+                                     temperature=temperature)
                 else:
                     if not self.glm_key:
                         continue
-                    out = self._call(self.glm_url, self.glm_key, model, messages, max_tokens, glm=True)
-                log_usage(prov, model, "digest")
+                    out = self._call(self.glm_url, self.glm_key, model, messages, max_tokens,
+                                     glm=True, temperature=temperature)
+                log_usage(prov, model, tier)
                 return out
             except Exception as e:
                 last_err = e
-                log_fail(prov, model, "digest", e)
+                log_fail(prov, model, tier, e)
                 continue
         return "[模型调用失败] %s" % last_err
 

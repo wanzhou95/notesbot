@@ -40,6 +40,11 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .tabs button{flex:1 1 auto;min-width:60px;border:0;background:transparent;border-radius:9px;padding:9px 6px;font-size:14px;cursor:pointer;color:var(--mut);font-weight:500;transition:all .18s var(--ease)}
 .tabs button:hover{color:var(--tx);background:var(--bg)}
 .tabs button.on{background:var(--acc);color:#fff;box-shadow:0 2px 8px rgba(109,90,230,.30)}
+.pchip{border:1px solid var(--line);background:var(--card);color:var(--tx);border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer;transition:all .16s var(--ease);font-family:inherit;line-height:1.5}
+.pchip:hover{background:var(--acc-50);border-color:var(--line-2)}
+.pchip.on{background:var(--acc-100);border-color:var(--acc);color:var(--acc-700);font-weight:600}
+.pchip small{color:var(--mut-2);font-size:11px;margin-left:3px;font-weight:400}
+.pchip.on small{color:var(--acc-600)}
 .ver{font-size:11px;color:var(--mut-2);margin-left:8px;font-variant-numeric:tabular-nums}
 /* 页脚备案：ICP + 公安联网备案，两个号都在，链接可点，窄屏自动折行 */
 .icpfoot{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:0 9px;padding:18px 0 0;font-size:12px;line-height:1.9;color:var(--mut-2);text-align:center}
@@ -185,7 +190,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v18</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v19</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -314,7 +319,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </div>
 <div id="pane-ask" class="pane" style="display:none">
   <div class="card">
-    <div class="mut">直接问大模型，回答任何问题；命中你已沉淀的技能卡时会优先按卡里的步骤答</div>
+    <div class="mut" id="askHint">直接问大模型，回答任何问题；命中你已沉淀的技能卡时会优先按卡里的步骤答</div>
+    <div class="row" id="personaRow" style="flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 0;font-size:13px;display:none">
+      <span class="mut">回答人格：</span>
+      <span id="personaChips" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+    </div>
     <div class="row" style="flex-wrap:wrap;gap:14px;align-items:center;margin:8px 0 0;font-size:13px" id="pmRow">
       <span class="mut">增强模型（付费，勾选本次提问使用）：</span>
       <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="pm" value="glm-5.3-flash"> GLM-5.3-Flash <span class="mut">推荐·近免费</span></label>
@@ -394,6 +403,7 @@ window.switchPane = function(t){
   });
   if(t === 'projects'){ loadTasks(); }
   if(t === 'skills'){ loadSkills(); loadReview(); }
+  if(t === 'ask'){ loadPersonas(); }
   if(t === 'video'){ loadVideos(); startJobsPoll(); }
   if(t === 'settings'){ loadSettings(); }
 };
@@ -1339,6 +1349,49 @@ window.saveSettings = function(){
       }
     });
 };
+window.personaSel = '';
+window.loadPersonas = function(){
+  var box = document.getElementById('personaChips');
+  var row = document.getElementById('personaRow');
+  if(!box || !row){ return; }
+  api('/api/persona/list').then(function(d){
+    // 只显示已建索引的系列：没索引的系列点进去会全是「没讲过」，不如不显示
+    var items = ((d && d.items) || []).filter(function(it){ return it.indexed > 0; });
+    if(!items.length){ row.style.display = 'none'; return; }
+    var html = '<span class="pchip" data-p="">关闭<small>普通问AI</small></span>';
+    items.forEach(function(it){
+      var note = it.indexed ? (it.indexed + ' 条') : '未建索引';
+      html += '<span class="pchip" data-p="' + escapeHtml(it.name) + '">' + escapeHtml(it.name)
+            + '<small>' + note + '</small></span>';
+    });
+    box.innerHTML = html;
+    row.style.display = 'flex';
+    box.querySelectorAll('.pchip').forEach(function(el){
+      if((el.dataset.p || '') === window.personaSel){ el.classList.add('on'); }
+      el.onclick = function(){ window.setPersona(el.dataset.p || ''); };
+    });
+  }).catch(function(){ row.style.display = 'none'; });
+};
+window.setPersona = function(p){
+  if(window.personaSel === p){ return; }
+  window.personaSel = p;
+  var box = document.getElementById('personaChips');
+  if(box){ box.querySelectorAll('.pchip').forEach(function(el){
+    el.classList.toggle('on', (el.dataset.p || '') === p); }); }
+  var hint = document.getElementById('askHint');
+  if(hint){
+    hint.textContent = p
+      ? ('以「' + p + '」的口吻回答，优先引用他视频里的原话并标注《视频》时间点；他没讲过的会自动转普通模型，并在回答前标明')
+      : '直接问大模型，回答任何问题；命中你已沉淀的技能卡时会优先按卡里的步骤答';
+  }
+  // 第一人称人格回答和普通回答混在同一段对话里会串味，切换即清空并留一行分隔
+  var chat = document.getElementById('chat');
+  if(chat){
+    chat.innerHTML = '<div class="mut" style="text-align:center;margin:8px 0">—— 已切换到 '
+                   + escapeHtml(p || '普通问AI') + ' ——</div>';
+  }
+  window.chatHistory = [];
+};
 window.askAi = function(){
   var q = document.getElementById('askq').value.trim();
   if(!q){ return; }
@@ -1354,12 +1407,15 @@ window.askAi = function(){
   chat.appendChild(loading);
   chat.scrollTop = chat.scrollHeight;
   window.chatHistory.push({role:'user', content:q});
-  api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, history:window.chatHistory, models:models})})
+  api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, history:window.chatHistory, models:models, persona: window.personaSel || ''})})
     .then(function(d){
       chat.removeChild(loading);
       var box = document.createElement('div');
       box.className = 'item';
-      box.innerHTML = '<b style="color:#059669">AI：</b><span style="white-space:pre-wrap">' + escapeHtml(d.reply) + '</span>';
+      var who = (d.mode === 'persona') ? (d.persona || '人格') : 'AI';
+      var whoColor = (d.mode === 'persona') ? '#6d5ae6' : '#059669';
+      box.innerHTML = '<b style="color:' + whoColor + '">' + escapeHtml(who) + '：</b>'
+                    + '<span style="white-space:pre-wrap">' + escapeHtml(d.reply) + '</span>';
       var sb = document.createElement('button');
       sb.className = 'x';
       sb.style.marginTop = '8px';
