@@ -7,7 +7,8 @@ from pathlib import Path
 
 from fastapi import (FastAPI, Request, HTTPException, UploadFile, File, Form,
                      BackgroundTasks)
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
+from fastapi.responses import (HTMLResponse, JSONResponse, FileResponse, Response,
+                               RedirectResponse)
 
 import config
 import feishu
@@ -102,6 +103,104 @@ def feishu_event(request: Request, body: dict, bg: BackgroundTasks):
     return reply
 
 
+# ===== 飞书网页应用免登录（把网页挂进飞书，点开直接进）=====
+
+SSO_STATE_COOKIE = "nb_sso_state"
+SSO_TRIED_COOKIE = "nb_sso_tried"   # 防止「失败了又自动跳授权」的死循环
+
+
+def _sso_redirect_uri(request: Request) -> str:
+    """SSO 回调地址。**必须与飞书后台「安全设置 → 重定向 URL」逐字符一致**，
+    包括协议、域名、路径和末尾有没有斜杠。不一致就是「请求非法」。
+    """
+    fixed = feishu.cfg("FEISHU_REDIRECT_URI")
+    if fixed:
+        return fixed.rstrip("/")
+    return str(request.base_url).rstrip("/") + "/api/feishu/sso/callback"
+
+
+def _sso_page(title: str, body: str, status: int = 200) -> HTMLResponse:
+    """免登失败时的说明页。不用 login.html，因为这里要把 open_id 显示给用户照着绑。"""
+    html = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%s</title><style>
+body{font-family:-apple-system,"PingFang SC",sans-serif;background:#f7f7fa;margin:0;
+padding:32px 20px;color:#1f2937;line-height:1.7}
+.card{max-width:520px;margin:0 auto;background:#fff;border-radius:14px;padding:24px;
+box-shadow:0 2px 12px rgba(0,0,0,.06)}
+h1{font-size:18px;margin:0 0 12px}p{margin:8px 0;font-size:14px}
+code{background:#f3f4f6;padding:2px 6px;border-radius:5px;font-size:13px;
+word-break:break-all;display:inline-block}
+.mut{color:#6b7280;font-size:13px}a{color:#6d5ae6}
+</style></head><body><div class="card"><h1>%s</h1>%s</div></body></html>"""
+    return HTMLResponse(html % (title, title, body), status_code=status)
+
+
+def _is_feishu_ua(request: Request) -> bool:
+    ua = request.headers.get("user-agent", "")
+    return ("Lark" in ua) or ("Feishu" in ua)
+
+
+@app.get("/api/feishu/sso/start")
+def feishu_sso_start(request: Request):
+    """跳去飞书授权。state 存 cookie，回调时比对，防伪造回调。"""
+    if not feishu.configured():
+        return _sso_page("飞书免登未配置", "<p>服务器缺 <code>FEISHU_APP_ID</code> / "
+                                          "<code>FEISHU_APP_SECRET</code>。</p>", 500)
+    state = secrets.token_hex(8)
+    url = feishu.authorize_url(_sso_redirect_uri(request), state,
+                              in_app=_is_feishu_ua(request))
+    r = RedirectResponse(url)
+    r.set_cookie(SSO_STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600)
+    return r
+
+
+@app.get("/api/feishu/sso/callback")
+def feishu_sso_callback(request: Request, code: str = "", state: str = ""):
+    """飞书授权回来。code 换 open_id → 查绑定表 → 签发本站会话。
+
+    失败一律**返回说明页**而不是再跳授权：否则「未绑定」的用户会被无限重定向。
+    同时种一个短命 cookie，让首页不再自动跳转。
+    """
+    def fail(msg: str, status: int = 200):
+        r = _sso_page("飞书免登失败", msg, status)
+        r.set_cookie(SSO_TRIED_COOKIE, "1", httponly=True, samesite="lax", max_age=3600)
+        r.delete_cookie(SSO_STATE_COOKIE)
+        return r
+
+    if not code:
+        return fail("<p>回调里没有 <code>code</code>。可能是授权被取消，"
+                    "或飞书后台「重定向 URL」填的地址与实际访问的不一致。</p>", 400)
+
+    expect = request.cookies.get(SSO_STATE_COOKIE, "")
+    if expect and state and not secrets.compare_digest(expect, state):
+        return fail("<p><code>state</code> 校验不通过（可能是跨站伪造的授权回调），"
+                    "已拒绝。</p>", 400)
+
+    ok, data = feishu.exchange_code(code)
+    if not ok:
+        return fail("<p>换 open_id 失败：<code>%s</code></p>"
+                    "<p class='mut'>code 有效期 5 分钟且只能用一次，重试请重新点一次应用。</p>"
+                    % str(data.get("err"))[:300])
+
+    open_id = str(data.get("open_id") or "")
+    user = feishu.identity_of(open_id)
+    if not user or user not in config.USERS:
+        return fail(
+            "<p>这个飞书账号还没绑定到本库账号。</p>"
+            "<p>你的 open_id：</p><p><code>%s</code></p>"
+            "<p class='mut'>把它发给管理员，用 "
+            "<code>manage.py feishu-bind &lt;open_id&gt; &lt;账号&gt;</code> 绑好后重开应用即可。</p>"
+            % open_id)
+
+    token = make_session(user)
+    r = RedirectResponse("/")
+    r.set_cookie("nb_token", token, httponly=True, samesite="lax", max_age=7 * 86400)
+    r.delete_cookie(SSO_STATE_COOKIE)
+    r.delete_cookie(SSO_TRIED_COOKIE)
+    return r
+
+
 # ---- 公安联网备案图标 ----
 # 官方要求「图标在前、备案号在右」。图标文件从公安备案平台下载后放进 static/，
 # 支持 png / gif / jpg 任一格式；这里每个请求实时判断文件是否存在，替换图标不用重启。
@@ -123,6 +222,12 @@ def beian_icon():
 @app.get("/")
 def root(request: Request):
     if not check_login(request):
+        # 在飞书客户端里打开时自动走免登，用户点开就直接进主页。
+        # 加 nb_sso_tried 判断是为了防死循环：免登失败（未绑定等）后不再自动跳，
+        # 否则会「首页 → 授权 → 回调失败 → 首页 → 授权 …」无限转。
+        if (feishu.configured() and _is_feishu_ua(request)
+                and not request.cookies.get(SSO_TRIED_COOKIE)):
+            return RedirectResponse("/api/feishu/sso/start")
         return _html("login.html")
     return _html("index.html")
 

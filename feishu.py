@@ -47,6 +47,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -55,6 +56,11 @@ import config
 FEISHU_BASE = "https://open.feishu.cn/open-apis"
 TOKEN_PATH = "/auth/v3/tenant_access_token/internal"
 MSG_PATH = "/im/v1/messages"
+APP_TOKEN_PATH = "/auth/v3/app_access_token/internal"
+USER_TOKEN_PATH = "/authen/v1/access_token"
+# 飞书客户端内用 index（已登录飞书即无感授权）；外部浏览器用扫码页
+AUTHORIZE_IN_APP = "https://open.feishu.cn/open-apis/authen/v1/index"
+AUTHORIZE_IN_BROWSER = "https://open.feishu.cn/open-apis/authen/v1/user_auth_page_beta"
 
 MAX_CHARS = 3000          # 单条消息上限，超了按段落切
 DEDUP_TTL = 24 * 3600     # 事件去重保留时长
@@ -65,6 +71,7 @@ _MENTION_RE = re.compile(r"@_user_\d+\s*")
 _client = httpx.Client(timeout=30)
 _tok_lock = threading.Lock()
 _tok: dict[str, Any] = {"token": "", "exp": 0.0}
+_app_tok: dict[str, Any] = {"token": "", "exp": 0.0}
 
 
 def log(msg: str) -> None:
@@ -213,6 +220,69 @@ def _chunks(text: str, size: int = MAX_CHARS) -> list[str]:
     if buf:
         out.append(buf)
     return out
+
+
+# ==================== 网页应用免登录 ====================
+
+def app_token(force: bool = False) -> str:
+    """应用身份令牌，换 user_access_token 时用。和 tenant_token 是两个东西。"""
+    now = time.time()
+    with _tok_lock:
+        if not force and _app_tok["token"] and _app_tok["exp"] > now:
+            return str(_app_tok["token"])
+        app_id, secret = cfg("FEISHU_APP_ID"), cfg("FEISHU_APP_SECRET")
+        if not app_id or not secret:
+            raise RuntimeError("FEISHU_APP_ID / FEISHU_APP_SECRET 未配置")
+        r = _client.post(FEISHU_BASE + APP_TOKEN_PATH,
+                         json={"app_id": app_id, "app_secret": secret})
+        d = r.json()
+        if d.get("code") != 0:
+            raise RuntimeError("取 app_access_token 失败: %s %s"
+                               % (d.get("code"), d.get("msg")))
+        _app_tok["token"] = d.get("app_access_token", "")
+        _app_tok["exp"] = now + max(60, int(d.get("expire", 7200)) - 300)
+        return str(_app_tok["token"])
+
+
+def authorize_url(redirect_uri: str, state: str, in_app: bool = True) -> str:
+    """拼授权跳转地址。
+
+    `in_app` 决定用哪个页面：飞书客户端内用 `authen/v1/index`（用户已登录飞书，
+    点一下就连带授权，扫码都省了）；外部浏览器只能用扫码页 `user_auth_page_beta`。
+    这两条路径用错会白屏或提示「请在飞书中打开」，是免登最常见的坑。
+    """
+    base = AUTHORIZE_IN_APP if in_app else AUTHORIZE_IN_BROWSER
+    q = urlencode({"app_id": cfg("FEISHU_APP_ID"),
+                   "redirect_uri": redirect_uri,
+                   "state": state})
+    return base + "?" + q
+
+
+def exchange_code(code: str) -> tuple[bool, dict]:
+    """用登录预授权码换 open_id。返回 (ok, data)；成功时 data 至少含 open_id。
+
+    文档确认：`authen/v1/access_token` 的响应体**直接带 open_id**，且该接口权限
+    要求为「无」——所以不必再申请「获取用户信息」权限，也不必调
+    `/authen/v1/user_info`。少一个权限就少一处配错的机会。
+    """
+    if not code:
+        return False, {"err": "缺少 code"}
+    try:
+        r = _client.post(
+            FEISHU_BASE + USER_TOKEN_PATH,
+            headers={"Authorization": "Bearer %s" % app_token(),
+                     "Content-Type": "application/json; charset=utf-8"},
+            json={"grant_type": "authorization_code", "code": code},
+        )
+        d = r.json()
+    except Exception as e:
+        return False, {"err": "换 token 异常: %s: %s" % (type(e).__name__, str(e)[:160])}
+    if d.get("code") != 0:
+        return False, {"err": "飞书返回 %s %s" % (d.get("code"), d.get("msg"))}
+    data = d.get("data") or {}
+    if not data.get("open_id"):
+        return False, {"err": "响应里没有 open_id"}
+    return True, data
 
 
 # ==================== 事件去重 ====================
