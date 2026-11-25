@@ -28,6 +28,7 @@ VIDEO_DIR        视频笔记目录（默认 03-Resources/视频字幕）
 BILI_COOKIE      可选，B 站登录 Cookie（如 `SESSDATA=xxx`），能解锁字幕/更高音质
 YTDLP_COOKIES    可选，cookies.txt 路径，给抖音等需要登录的平台用
 """
+import gc
 import json
 import os
 import re
@@ -576,6 +577,9 @@ _sv_lock = threading.Lock()
 _sv_rec = None
 _sv_load_err = ""
 _ASR_SLOT = threading.Semaphore(ASR_CONCURRENCY)   # 本地识别限流，防内存叠加
+# 当前有几段正在用本地模型：只有归零时才能安全释放（否则会把别人正在用的模型拆掉）
+_sv_state_lock = threading.Lock()
+_sv_inflight = 0
 FALLBACK_LOG = DATA_DIR / "asr_fallback.log"
 
 
@@ -634,18 +638,73 @@ def _asr_note_fallback(err):
 
 def _asr_sensevoice(path):
     """本地 SenseVoice-Small（int8）：0 元、RTF≈0.06、峰值约 421MB。"""
+    global _sv_inflight
     with _ASR_SLOT:
-        if _sv_rec is None:
-            avail = _mem_available_mb()
-            if avail < SENSEVOICE_MIN_FREE_MB:
-                raise RuntimeError("可用内存 %.0fMB < %dMB，本地识别暂不启动"
-                                   % (avail, SENSEVOICE_MIN_FREE_MB))
-        rec = _sensevoice_rec()
-        samples, sr = _wav_samples(path)
-        st = rec.create_stream()
-        st.accept_waveform(sr, samples)
-        rec.decode_stream(st)
-        return re.sub(r"\s+", " ", (st.result.text or "").strip())
+        with _sv_state_lock:
+            _sv_inflight += 1
+        try:
+            if _sv_rec is None:
+                avail = min(_mem_available_mb(), _cgroup_headroom_mb())
+                if avail < SENSEVOICE_MIN_FREE_MB:
+                    raise RuntimeError("可用内存 %.0fMB < %dMB，本地识别暂不启动"
+                                       % (avail, SENSEVOICE_MIN_FREE_MB))
+            rec = _sensevoice_rec()
+            samples, sr = _wav_samples(path)
+            st = rec.create_stream()
+            st.accept_waveform(sr, samples)
+            rec.decode_stream(st)
+            return re.sub(r"\s+", " ", (st.result.text or "").strip())
+        finally:
+            with _sv_state_lock:
+                _sv_inflight -= 1
+
+
+def _cgroup_headroom_mb():
+    """本服务 cgroup 还能用多少 MB（systemd MemoryMax - 当前用量）。
+
+    系统 MemAvailable 够、但 cgroup 顶到 MemoryMax 时，内核照样按 memcg 杀进程
+    （2026-11-25 就是这样 OOM 的），所以本地识别前必须同时看这条线。
+    """
+    try:
+        for line in open("/proc/self/cgroup", encoding="ascii"):
+            parts = line.strip().split(":", 2)
+            if len(parts) == 3 and parts[0] == "0":
+                base = "/sys/fs/cgroup" + parts[2]
+                with open(base + "/memory.max", encoding="ascii") as f:
+                    mx = f.read().strip()
+                if mx == "max":
+                    return 999999.0
+                with open(base + "/memory.current", encoding="ascii") as f:
+                    cur = int(f.read().strip())
+                return (int(mx) - cur) / 1048576.0
+    except Exception:
+        pass
+    return 999999.0
+
+
+def release_sensevoice():
+    """释放本地模型，把约 330MB 常驻内存还给系统；下次用到会自动重新加载（约 1.6 秒）。
+
+    任务结束调用一次即可：2 核 1.9G 的机器上，模型一直挂着会让 cgroup 贴着上限跑，
+    一旦叠加 yt-dlp / ffmpeg 就触发 OOM（2026-11-25 就是这样把排队任务全丢了）。
+    """
+    global _sv_rec
+    with _sv_state_lock:
+        if _sv_inflight > 0:      # 还有段在识别，别拆
+            return False
+        rec, _sv_rec = _sv_rec, None
+    if rec is None:
+        return False
+    del rec
+    gc.collect()
+    # glibc 不会自动把空闲堆还给系统：onnxruntime 释放后 RSS 仍停在 320MB 左右，
+    # 必须显式 malloc_trim 才真正回收（实测 320MB → 61MB）。非 glibc 平台忽略即可。
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+    return True
 
 
 def asr_file(path, prev_text=""):
@@ -1111,4 +1170,5 @@ def _run(jid, url, file_path):
     finally:
         with _JOBS_LOCK:
             RUNNING.discard(jid)      # 不管成功失败，都要从"正在跑"里摘掉
+        release_sensevoice()          # 任务结束释放本地模型，别让它常驻压着 cgroup 上限
         shutil.rmtree(work, ignore_errors=True)
