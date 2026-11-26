@@ -71,8 +71,10 @@ ASR_SF_MODEL = (ENV.get("ASR_SF_MODEL") or "FunAudioLLM/SenseVoiceSmall").strip(
 # SenseVoice 模型目录（需 model.int8.onnx + tokens.txt，共约 230MB）
 SENSEVOICE_DIR = Path(ENV.get("SENSEVOICE_DIR") or (DATA_DIR / "models" / "sensevoice"))
 SENSEVOICE_THREADS = max(1, int(ENV.get("SENSEVOICE_THREADS", "2") or 2))
-# 加载本地模型前要求的最低可用内存（MB）。实测单进程峰值约 421MB，留出余量给 web 本身
-SENSEVOICE_MIN_FREE_MB = int(ENV.get("SENSEVOICE_MIN_FREE_MB", "520") or 520)
+# 加载本地模型前要求的最低可用内存（MB）。实测单进程峰值约 421MB。
+# 2026-11-26 从 520 抬到 650：cgroup 硬上限只有 1G，模型 + yt-dlp + ffmpeg 叠起来
+# 贴顶就是 OOM（11-25 就是这样把排队任务全丢了）。宁可多走免费的硅基流动，也别赌。
+SENSEVOICE_MIN_FREE_MB = int(ENV.get("SENSEVOICE_MIN_FREE_MB", "650") or 650)
 # 本地识别同时只允许 1 段（421MB × N 会把 1.9G 机器拖进 OOM）
 ASR_CONCURRENCY = max(1, int(ENV.get("ASR_CONCURRENCY", "1") or 1))
 CHUNK_SEC = 28
@@ -1243,8 +1245,9 @@ MAX_CONCURRENT = max(1, int(ENV.get("VIDEO_CONCURRENCY", "1") or 1))
 _QUEUE = threading.Semaphore(MAX_CONCURRENT)
 # 当前真正在跑的任务 id（区别于"在排队等信号量"的）
 RUNNING = set()
-# 可用内存低于这个值就先等，别让几个任务把机器撑爆（2G 内存机器默认 220MB）
-MIN_FREE_MB = int(ENV.get("VIDEO_MIN_FREE_MB", "220") or 220)
+# 可用内存低于这个值就先等，别让几个任务把机器撑爆。
+# 2026-11-26 从 220 抬到 350：220MB 时 ffmpeg 一起来就撞 cgroup 顶，等待闸门形同虚设。
+MIN_FREE_MB = int(ENV.get("VIDEO_MIN_FREE_MB", "350") or 350)
 
 
 # ---------------- 任务持久化（重启不丢队列） ----------------
