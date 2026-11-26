@@ -55,9 +55,19 @@ MAX_MINUTES = int(ENV.get("VIDEO_MAX_MIN", "180") or 180)
 ASR_MODEL = ENV.get("MODEL_ASR", "glm-asr-2512").strip() or "glm-asr-2512"
 # 语音识别供应商：
 #   sensevoice（默认）—— 本地 sherpa-onnx 跑 SenseVoice-Small int8，0 元/RTF≈0.06/峰值约 421MB
-#   deepseek —— 云端按小时计费（约 0.41 元/小时），本地不可用时自动兜底
+#   siliconflow —— 硅基流动云端 SenseVoiceSmall，0 元（免费档），不占本地内存
+#   deepseek —— 云端按小时计费（约 0.41 元/小时）
 #   glm —— 智谱，支持把上一段当 prompt（需有资源包）
+#
+# 兜底顺序（ASR_PROVIDER=sensevoice 时）：本地 → 硅基流动（免费）→ DeepSeek（付费）。
+# 为什么中间插一层：2026-11-26 批量导入 181 篇时内存只有 493MB < 阈值 520MB，
+# 每一个都回落到了付费的 DeepSeek。硅基流动上 FunAudioLLM/SenseVoiceSmall 标价免费，
+# 而且和本地是同一个模型，没理由继续付这笔钱。
 ASR_PROVIDER = (ENV.get("ASR_PROVIDER", "sensevoice") or "sensevoice").strip().lower()
+# 硅基流动 ASR（免费档）。key 默认复用 embedding 那个（同一个账号），也可单独配
+ASR_SF_API_KEY = (ENV.get("ASR_SF_API_KEY") or ENV.get("EMBED_API_KEY") or "").strip()
+ASR_SF_BASE = (ENV.get("ASR_SF_BASE") or "https://api.siliconflow.cn").rstrip("/")
+ASR_SF_MODEL = (ENV.get("ASR_SF_MODEL") or "FunAudioLLM/SenseVoiceSmall").strip()
 # SenseVoice 模型目录（需 model.int8.onnx + tokens.txt，共约 230MB）
 SENSEVOICE_DIR = Path(ENV.get("SENSEVOICE_DIR") or (DATA_DIR / "models" / "sensevoice"))
 SENSEVOICE_THREADS = max(1, int(ENV.get("SENSEVOICE_THREADS", "2") or 2))
@@ -505,6 +515,57 @@ def slice_audio(src, outdir, seconds=CHUNK_SEC):
     return sorted(outdir.glob("c*.wav"))
 
 
+# 只由标点 / emoji / 符号组成的"文本"，是模型对音乐段、静音段的常见输出。
+# 硅基流动实测：纯 440Hz 音返回 "🎼."。现有过滤是 len(text)<=1，拦不住这种两字符的。
+_NOISE_RE = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def _noise_only(text):
+    """去掉标点/符号/emoji 后什么都不剩 → 判定为噪音。
+
+    汉字和字母数字属于 \\w，会被保留；"啦。" 这种仍算有内容（由上层的最短长度兜）。
+    """
+    return not _NOISE_RE.sub("", text or "")
+
+
+def _asr_siliconflow(path):
+    """硅基流动 ASR：POST /v1/audio/transcriptions，免费档 FunAudioLLM/SenseVoiceSmall。
+
+    和本地跑的是同一个模型（云端浮点，本地 int8），但**不占本机内存**，所以专门
+    用来替代「内存一紧就回落付费 DeepSeek」这条路径。
+
+    实测（2026-11-26）：
+      - 我们的 28 秒 16k 单声道 WAV 可直接上传（mp3 也行），10 秒音频约 0.9MB
+      - 20 次连发零限流；延迟 0.5~20.7s、均值 3.6s（本地是稳定 1.7s/片），
+        所以它只做兜底，不当主力
+      - 限制：单文件 ≤1 小时 / ≤50MB，28 秒切片远低于此
+      - 无 prompt / language / response_format 参数，返回 {"text": "..."}
+    """
+    if not ASR_SF_API_KEY:
+        raise AsrQuotaError("缺少 ASR_SF_API_KEY / EMBED_API_KEY，无法走硅基流动转写")
+    name = getattr(path, "name", None) or str(path).rsplit("/", 1)[-1]
+    with open(path, "rb") as f:
+        r = httpx.post(
+            ASR_SF_BASE + "/v1/audio/transcriptions",
+            headers={"Authorization": "Bearer " + ASR_SF_API_KEY},
+            files={"file": (name, f, "audio/wav")},
+            data={"model": ASR_SF_MODEL},
+            timeout=180,          # 实测最坏 20.7s，留足余量
+        )
+    if r.status_code != 200:
+        body = r.text[:200]
+        # 401/403 鉴权或实名、402 余额 → 换谁都没用，别再往下拖
+        if r.status_code in (401, 402, 403):
+            raise AsrQuotaError("硅基流动 ASR 不可用（HTTP %s，key 失效/未实名/余额不足）：%s"
+                                % (r.status_code, body))
+        # 429 免费档限流、503 繁忙 → 临时状态，交给上层退避重试
+        if r.status_code in (429, 503):
+            raise RuntimeError("硅基流动 ASR 限流/繁忙（HTTP %s）" % r.status_code)
+        raise RuntimeError("硅基流动 ASR HTTP %s %s" % (r.status_code, body))
+    text = re.sub(r"\s+", " ", (r.json().get("text") or "").strip())
+    return "" if _noise_only(text) else text
+
+
 def asr_deepseek(path):
     """DeepSeek ASR：POST /v1/tools/asr。
 
@@ -627,12 +688,13 @@ def _wav_samples(path):
     return [x / 32768.0 for x in a], sr
 
 
-def _asr_note_fallback(err):
-    """本地识别失败回落云端时留痕，便于回溯「这一段为什么走了云」。"""
+def _asr_note_fallback(err, target="DeepSeek"):
+    """前一层失败、回落云端时留痕，便于回溯「这一段为什么走了云、走了哪一层」。"""
     try:
         with open(FALLBACK_LOG, "a", encoding="utf-8") as f:
-            f.write("%s\tSenseVoice 本地失败，回落 DeepSeek\t%s\n"
-                    % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), str(err)[:200]))
+            f.write("%s\t识别失败，回落 %s\t%s\n"
+                    % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), target,
+                       str(err)[:200]))
     except Exception:
         pass
 
@@ -708,24 +770,97 @@ def release_sensevoice():
     return True
 
 
-def asr_file(path, prev_text=""):
-    """单段音频 → 文字。由 ASR_PROVIDER 决定，默认本地 SenseVoice，失败自动回落云端。
+# 硅基流动连续失败熔断：同一任务内连挂 N 次就跳过它，直接走 DeepSeek。
+# 不加这个，一次网络故障会让每片都等满 180s 超时——11 片就是半小时。
+_sf_state = threading.local()
+_SF_MAX_FAILS = 2
 
-    - sensevoice（默认）：本地跑，0 成本；内存不足/模型缺失/异常时回落 DeepSeek
-    - deepseek：云端按小时计费，无 prompt 参数，语言自动检测
+
+def _sf_reset():
+    _sf_state.n = 0
+
+
+def _sf_tripped():
+    return getattr(_sf_state, "n", 0) >= _SF_MAX_FAILS
+
+
+def _sf_mark_fail():
+    _sf_state.n = getattr(_sf_state, "n", 0) + 1
+
+
+# 记录本次任务最后一次实际成功的通道，用于把「到底花没花钱」写进任务结果。
+# 用 threading.local：每个任务一个线程，互不串。
+_chan_state = threading.local()
+
+
+def _mark_channel(name):
+    _chan_state.last = name
+
+
+CHANNEL_LABEL = {
+    "sensevoice": "SenseVoice 本地",
+    "siliconflow": "硅基流动 SenseVoice",
+    "deepseek": "DeepSeek",
+    "glm": "GLM",
+}
+
+
+def last_channel_label():
+    """本次任务最终用的通道名（没走过识别时回落到配置值）。"""
+    return CHANNEL_LABEL.get(getattr(_chan_state, "last", "") or ASR_PROVIDER,
+                             "云端")
+
+
+def asr_file(path, prev_text=""):
+    """单段音频 → 文字。
+
+    默认链（ASR_PROVIDER=sensevoice）：
+        本地 SenseVoice → 硅基流动（免费）→ DeepSeek（付费，最后保险）
+
+    - sensevoice（默认）：本地跑，0 成本、约 1.7s/片，但峰值 421MB
+    - siliconflow：云端免费、不占内存，但慢且不稳（实测 0.5~20s）
+    - deepseek：付费兜底（约 0.41 元/小时）
     - glm：支持把上一段当 prompt，术语/人名更连贯（需有额度）
     """
     if ASR_PROVIDER == "glm":
         return _asr_glm(path, prev_text)
+    if ASR_PROVIDER == "siliconflow":
+        t = _asr_siliconflow(path)
+        _mark_channel("siliconflow")
+        return t
+    if ASR_PROVIDER == "deepseek":
+        t = asr_deepseek(path)
+        _mark_channel("deepseek")
+        return t
     if ASR_PROVIDER == "sensevoice":
         try:
-            return _asr_sensevoice(path)
+            t = _asr_sensevoice(path)
+            _mark_channel("sensevoice")
+            return t
         except AsrQuotaError:
             raise
         except Exception as e:
-            _asr_note_fallback(e)
-            return asr_deepseek(path)
-    return asr_deepseek(path)
+            # 本地跑不起来（最常见：内存不足）→ 先试免费的硅基流动，别急着付钱
+            if _sf_tripped():
+                _asr_note_fallback(e, "DeepSeek（硅基流动已熔断）")
+                t = asr_deepseek(path)
+                _mark_channel("deepseek")
+                return t
+            _asr_note_fallback(e, "硅基流动")
+            try:
+                t = _asr_siliconflow(path)
+                _sf_state.n = 0            # 成功就复位，下次继续先试它
+                _mark_channel("siliconflow")
+                return t
+            except Exception as e2:
+                _sf_mark_fail()
+                _asr_note_fallback(e2, "DeepSeek")
+                t = asr_deepseek(path)
+                _mark_channel("deepseek")
+                return t
+    t = asr_deepseek(path)
+    _mark_channel("deepseek")
+    return t
 
 
 def transcribe_media(path, workdir, on_progress=None):
@@ -737,6 +872,7 @@ def transcribe_media(path, workdir, on_progress=None):
     chunks = slice_audio(path, workdir / "chunks")
     if not chunks:
         raise RuntimeError("没切出音频片段（文件可能只有画面/已损坏）")
+    _sf_reset()          # 每个任务独立计熔断，别把上个任务的失败带过来
     pairs, prev, fails = [], "", 0
     repeat = {"text": "", "n": 0}
     for i, p in enumerate(chunks):
@@ -1487,8 +1623,9 @@ def _run(jid, url, file_path):
                     src, work,
                     on_progress=lambda i, n: _set(jid, step=i, total=n,
                                                   stage="转写中 %d/%d 段" % (i, n)))
-                _label = {"glm": "GLM", "sensevoice": "SenseVoice 本地"}.get(ASR_PROVIDER, "DeepSeek")
-                method = "%s ASR 转写" % _label
+                # 标签取「实际用过的通道」，而不是配置值：回落时说清楚到底走的哪一层，
+                # 这样看笔记就能知道这次有没有花钱
+                method = "%s ASR 转写" % last_channel_label()
 
             _set(jid, stage="生成速览")
             summary = summarize(pairs)
