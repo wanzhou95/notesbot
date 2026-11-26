@@ -190,7 +190,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v21</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v22</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -1220,8 +1220,23 @@ window.onSwitchKey = function(e){
     if(on && on.scrollIntoView){ on.scrollIntoView({block:'nearest'}); }
   } else if(e.key === 'Enter'){
     e.preventDefault();
-    if(window.swIndex >= 0){ pickSwitch(window.swIndex); }
-    else if(window.swCands.length){ pickSwitch(0); }
+    // 已经用 ↑↓ 高亮过 → 直接选它
+    if(window.swIndex >= 0){ pickSwitch(window.swIndex); return; }
+    // 名字完全对上 → 意图明确，直接选（"提示词" 不该选中 "ai提示词"）
+    var q = (document.getElementById('swInput').value || '').trim().toLowerCase();
+    var exact = -1;
+    window.swCands.forEach(function(t, i){
+      if(String(t.name || '').toLowerCase() === q){ exact = i; }
+    });
+    if(exact >= 0){ pickSwitch(exact); return; }
+    if(window.swCands.length === 1){ pickSwitch(0); return; }
+    if(window.swCands.length > 1){
+      // 多个相近任务（如「ai提示词」和「提示词」）绝不能盲选第一个，
+      // 先高亮一条让用户确认，再按一次回车才切过去
+      window.swIndex = 0;
+      renderSwitchList();
+      report('有 ' + window.swCands.length + ' 个相近任务，请点选一条（或再按回车选高亮项）', true);
+    }
   } else if(e.key === 'Escape'){
     hideSwitchList(); document.getElementById('swInput').blur();
   }
@@ -1246,7 +1261,9 @@ window.leave = function(){
 };
 window.loadCtx = function(){
   api('/api/ctx').then(function(d){
-    document.getElementById('ctx').textContent = d.active ? ('当前项目：' + d.active) : '未在进行项目';
+    // 带上级路径：库里有多个「提示词」类项目时，光看名字分不清记到哪
+    var label = d.label || (d.parent ? (d.parent + ' / ' + d.active) : d.active);
+    document.getElementById('ctx').textContent = d.active ? ('当前项目：' + label) : '未在进行项目';
     document.getElementById('leaveBtn').style.display = d.active ? 'inline-block' : 'none';
   });
 };

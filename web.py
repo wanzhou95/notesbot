@@ -782,7 +782,10 @@ def api_task_search(request: Request, q: str = ""):
             "parent": t.get("parent") or "",
         })
     rank = {"doing": 0, "todo": 1, "done": 2}
-    out.sort(key=lambda x: (rank.get(x["status"], 3), x["name"]))
+    # 名字完全对上（忽略大小写）的候选永远排第一：搜「提示词」时不该让「ai提示词」占首位，
+    # 前端回车会取第一条，排错就是记错项目
+    out.sort(key=lambda x: (0 if x["name"].lower() == ql else 1,
+                            rank.get(x["status"], 3), x["name"]))
     return {"list": out[:20], "q": q}
 
 
@@ -905,12 +908,19 @@ def ctx(request: Request):
     u = require(request)
     st = storage.load_state(u)
     active = st.get("active")
-    name = None
+    name = parent = None
     if active:
         import tasks
         t = tasks.read_task(u, active)
         name = t["name"] if t else active
-    return {"active": name, "slug": active}
+        if t and t.get("parent"):
+            parent = t["parent"]
+        elif active and "/" in active:      # frontmatter 没写 parent，就从 slug 的父段取名
+            p = tasks.read_task(u, active.rsplit("/", 1)[0])
+            parent = p["name"] if p else active.rsplit("/", 1)[0]
+    # label：带上级路径的完整显示名。库里有多个同名/近名项目时，光看名字分不清记到哪。
+    label = ("%s / %s" % (parent, name)) if (parent and name) else name
+    return {"active": name, "slug": active, "parent": parent, "label": label}
 
 
 @app.get("/api/videos")

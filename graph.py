@@ -647,9 +647,15 @@ def node_step(state: S) -> S:
     user, slug = state["user"], state["project"]
     n = storage.append_step(user, slug, state["text"])
     t = tasks.read_task(user, slug) or {}
+    if not n:
+        return {**state, "reply": "没记住：项目「%s」现在找不到了（可能被改名或删掉），重发一句或重新「开始」一个项目。" % slug}
+    # 回执必须写清记到哪：《提示词》这种同名项目库里有好几个，只报「第 3 步」等于没说
+    label = t.get("name") or slug
+    if t.get("parent"):
+        label = "%s / %s" % (t["parent"], label)
     if n == 1:
-        return {**state, "reply": "已记入《%s》第 1 步。做完发「完成 1」，或直接在网页/Obsidian 里勾选。" % t.get("name", slug)}
-    return {**state, "reply": "已记入第 %d 步（%d/%d）。" % (n, t.get("done", 0), t.get("total", 0))}
+        return {**state, "reply": "已记入《%s》第 1 步。做完发「完成 1」，或直接在网页/Obsidian 里勾选。" % label}
+    return {**state, "reply": "已记入《%s》第 %d 步（%d/%d）。" % (label, n, t.get("done", 0), t.get("total", 0))}
 
 
 def _categorize_and_write(user, text):
