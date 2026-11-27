@@ -14,6 +14,10 @@ LEDGER_NAME = "整理台账.md"
 
 IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
 TEXT_EXTS = {"txt", "md", "markdown", "csv", "json", "py", "log", "yaml", "yml", "html"}
+# HTML 原样保存、不提取文字：剥标签剥出来的是「AI创作工作台 创作 画布Hot 视觉设定库…」
+# 这种残渣，既不能读也不能用，反倒把原文件带走了。用户要的是能直接复制/转发/下载的源文件，
+# 所以 html 走「仅存原文件」这条路（原始字节在上传时就已落 _assets）。
+RAW_EXTS = {"html", "htm"}
 MAX_BYTES = 8 * 1024 * 1024  # 8MB
 
 
@@ -35,6 +39,11 @@ def is_image(name):
     return ext_of(name) in IMAGE_EXTS
 
 
+def is_raw(name):
+    """HTML/HTM：只存原文件，不抽取文字（见 RAW_EXTS 的说明）。"""
+    return ext_of(name) in RAW_EXTS
+
+
 def extract_text(name, data: bytes):
     """从上传文件提取纯文本（txt/md/csv 等直接读，docx 解析段落）。"""
     ext = ext_of(name)
@@ -49,7 +58,11 @@ def extract_text(name, data: bytes):
 
 
 def html_to_text(data: bytes):
-    """HTML → (标题, 纯文本)。
+    """HTML → (标题, 纯文本)。**已不在上传主链路上用**（html 现在原样保存）。
+
+    保留原因：早期把 html 剥成纯文本存笔记用的，历史笔记是它生成的；
+    剥标签会丢掉布局/样式/脚本，交互页只剩一堆零散词（「创作 画布 视觉设定库…」），
+    所以 2026-11-27 起 html 上传不再走这里。真要提取文字请单独开接口，别复用上传链路。
 
     标题优先取 <title>，其次第一个 <h1>；正文剥掉 script/style/注释/head 后
     再去标签得到可见文字。以前 HTML 直接当纯文本存，导致文件名变成
@@ -137,17 +150,14 @@ def organize(user, name, data: bytes, source="upload"):
         return old["category"], old["note"], True
 
     ext = ext_of(name)
-    if ext in ("html", "htm"):
-        title, text = html_to_text(data)
-        if not text:
-            # 正文都剥不出来时退回文件名，避免写空笔记
-            text = name.rsplit(".", 1)[0]
-        cat, rel = categorize_and_write(user, text, source=source, title=title or None)
-    else:
-        text = extract_text(name, data)
-        if not text:
-            raise ValueError("文件里没有可提取的文字")
-        cat, rel = categorize_and_write(user, text, source=source)
+    if ext in RAW_EXTS:
+        # 兜底防线：正常路径在 /api/process 就被拦下了（直接返回「已原样保存」），
+        # 走到这里说明有人绕过接口硬调，宁可报错也不产出残渣笔记。
+        raise ValueError("HTML 文件按原样保存，不做文字提取")
+    text = extract_text(name, data)
+    if not text:
+        raise ValueError("文件里没有可提取的文字")
+    cat, rel = categorize_and_write(user, text, source=source)
     _append_ledger(user, h, name, rel, cat)
     return cat, rel, False
 

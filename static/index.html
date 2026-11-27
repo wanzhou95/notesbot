@@ -190,7 +190,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 </style>
 </head>
 <body>
-<div class="hd"><b>📓 我的知识库</b><span class="ver">v22</span></div>
+<div class="hd"><b>📓 我的知识库</b><span class="ver">v23</span></div>
 <div class="wrap">
 <div class="tabs">
 <button id="tab-write" class="on" onclick="switchPane('write')">写笔记</button>
@@ -461,15 +461,26 @@ window.renderUploads = function(){
     var acts = '';
     if(u.kind === 'image'){
       acts = '<button onclick="procUp(\'' + k + '\',\'ocr\',this)">识别文字</button>';
+    } else if(u.kind === 'html'){
+      // HTML 原样保存，不抽文字（剥标签剩下的是一堆零散词，没用还占地方）
+      if(u.path){
+        var enc = u.path.split('/').map(encodeURIComponent).join('/');
+        acts = '<a class="exp" href="/api/asset/' + enc + '" target="_blank" rel="noopener noreferrer">打开</a>'
+             + ' <a class="exp" href="/api/asset/' + enc + '?download=1">下载</a>'
+             + ' <button onclick="copyAssetPath(\'' + k + '\')">复制路径</button>';
+      }
     } else {
       acts = '<button onclick="procUp(\'' + k + '\',\'organize\',this)">整理成笔记</button>';
       if(u.path){
-        var enc = u.path.split('/').map(encodeURIComponent).join('/');
-        acts += ' <a class="exp" href="/api/asset/' + enc + '" target="_blank" rel="noopener noreferrer">原文件</a>';
+        var enc2 = u.path.split('/').map(encodeURIComponent).join('/');
+        acts += ' <a class="exp" href="/api/asset/' + enc2 + '" target="_blank" rel="noopener noreferrer">原文件</a>'
+              + ' <a class="exp" href="/api/asset/' + enc2 + '?download=1">下载</a>';
       }
     }
+    var sub = u.kind === 'image' ? '图片 · 已存图库'
+            : (u.kind === 'html' ? '网页 · 原样保存（不提取文字）' : '文件');
     return '<div class="upitem">' + thumb + '<div class="nm">' + escapeHtml(u.name) + '</div>' +
-      '<div class="mut" style="font-size:12px">' + (u.kind === 'image' ? '图片 · 已存图库' : '文件') + '</div>' +
+      '<div class="mut" style="font-size:12px">' + sub + '</div>' +
       '<div class="acts">' + acts + '</div>' +
       (u.res ? '<div class="res">' + escapeHtml(u.res) + '</div>' : '') +
       '</div>';
@@ -483,7 +494,9 @@ window.onfile = function(){
 window.uploadOne = function(f){
   if(f.size > 8*1024*1024){ alert('「' + f.name + '」超过 8MB，已跳过'); return; }
   var key = Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-  window.uploads[key] = {name: f.name, kind: /^image\//.test(f.type) ? 'image' : 'file', res: '上传中...'};
+  var isImg = /^image\//.test(f.type);
+  var isHtml = /\.html?$/i.test(f.name);
+  window.uploads[key] = {name: f.name, kind: (isImg ? 'image' : (isHtml ? 'html' : 'file')), res: '上传中...'};
   renderUploads();
   var rd = new FileReader();
   rd.onload = function(){
@@ -491,13 +504,32 @@ window.uploadOne = function(f){
       body: JSON.stringify({name: f.name, data: rd.result})})
       .then(function(d){
         var u = window.uploads[key];
-        u.path = d.path; u.kind = d.kind; u.preview = u.kind === 'image' ? rd.result : null;
-        u.res = '';
+        u.path = d.path; u.kind = (d.kind === 'image' ? 'image' : (isHtml ? 'html' : 'file'));
+        u.preview = u.kind === 'image' ? rd.result : null;
+        // HTML 上传即原样保存，不需要再点任何按钮
+        u.res = (u.kind === 'html') ? '✅ 已原样保存，可直接下载或复制路径转发' : '';
         renderUploads();
       })
       .catch(function(){ window.uploads[key].res = '上传失败，请重试'; renderUploads(); });
   };
   rd.readAsDataURL(f);
+};
+// 复制附件在库内的相对路径（粘贴到 Obsidian 里做链接，或去文件夹里找原文件）
+window.copyAssetPath = function(key){
+  var u = window.uploads[key];
+  if(!u || !u.path){ return; }
+  var txt = u.path;
+  var done = function(){ u.res = '已复制路径：' + txt; renderUploads(); };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(done).catch(function(){ fallbackCopy(txt, done); });
+  } else { fallbackCopy(txt, done); }
+};
+window.fallbackCopy = function(txt, done){
+  var ta = document.createElement('textarea');
+  ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); done(); } catch(e) { alert('复制失败，路径是：' + txt); }
+  document.body.removeChild(ta);
 };
 window.procUp = function(key, action, btn){
   var u = window.uploads[key];
@@ -511,6 +543,8 @@ window.procUp = function(key, action, btn){
       if(action === 'ocr'){
         u.res = d.text ? ('识别结果：\n' + d.text + '\n\n✅ 已存为笔记「' + d.category + '」，可在搜索里查看') :
                (d.msg || '未识别到文字');
+      } else if(d.action === 'save'){
+        u.res = d.msg || '已原样保存';
       } else if(d.dedup){
         u.res = 'ℹ️ 这份内容之前已整理过（同一份只整理一次），在「' + d.category +
                 '」：' + escapeHtml(d.note || '') + '\n想再存一份就先删掉那份，或改一下文件内容。';

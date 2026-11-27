@@ -608,6 +608,10 @@ def process_api(request: Request, body: dict):
             return {"ok": True, "action": "save", "msg": "图片已存入图库：%s" % rel}
         # 文件
         if action == "organize":
+            # HTML：不抽文字、不建笔记，原始字节在上传时已存进 _assets，这里只回执
+            if upload_mod.is_raw(p.name):
+                return {"ok": True, "action": "save", "path": rel,
+                        "msg": "HTML 已原样保存（未做文字提取）"}
             cat, nrel, dup = upload_mod.organize(u, p.name, data)
             return {"ok": True, "action": "organize", "category": cat,
                     "note": nrel, "dedup": dup}
@@ -620,11 +624,12 @@ def process_api(request: Request, body: dict):
 
 
 @app.get("/api/asset/{rel:path}")
-def asset_view(request: Request, rel: str):
+def asset_view(request: Request, rel: str, download: int = 0):
     """打开上传的原始附件（html/pdf/图片等）。
 
     只允许访问 `_assets/` 目录；html/pdf/图片内联返回，手机浏览器点链接即可直接渲染
-    （html 里的 JS 交互、localStorage 进度都能正常用）。其余类型按附件下载。
+    （html 里的 JS 交互、localStorage 进度都能正常用）。`?download=1` 强制按附件下载，
+    用于把原文件存到本地后转发。其余类型默认按附件下载。
     """
     u = require(request)
     rel = rel.lstrip("/")
@@ -639,6 +644,8 @@ def asset_view(request: Request, rel: str):
     ct = ct or "application/octet-stream"
     inline = p.suffix.lower() in (".html", ".htm", ".png", ".jpg", ".jpeg",
                                   ".gif", ".webp", ".svg", ".pdf")
+    if download:
+        inline = False
     disp = "inline" if inline else "attachment"
     return FileResponse(str(p), media_type=ct, headers={
         "Content-Disposition": "%s; filename*=UTF-8''%s" % (disp, quote(p.name)),
